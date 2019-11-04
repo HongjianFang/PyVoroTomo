@@ -82,7 +82,6 @@ def load_params(argc):
     params['dlat'] = parser.getfloat('Model Parameters', 'dlat')
     params['dlon'] = parser.getfloat('Model Parameters', 'dlon')
     params['drad'] = parser.getfloat('Model Parameters', 'drad')
-    params['phase'] = parser.get('Data Sampling Parameters', 'phase')
     params['nsamp'] = parser.getint('Data Sampling Parameters', 'nsamp')
     params['ncell'] = parser.getint('Data Sampling Parameters', 'ncell')
     params['nreal'] = parser.getint('Data Sampling Parameters', 'nreal')
@@ -182,6 +181,32 @@ def sph2xyz(arr):
 
 
 ###############################################################################
+def cost_function(loc, *args):
+    """
+    A cost function for locating events.
+
+    :param loc:
+    :type loc:
+    :param *args:
+    :type *args:
+
+    :return:
+    :rtype:
+    """
+    lat, lon, depth, time = loc
+    df_arrivals, tti = args
+    try:
+        residuals = np.array([
+            tti[arrival['station_id']][arrival['phase']](geo2sph((lat, lon, depth)))
+            + time
+            - arrival['time']
+            for idx, arrival in df_arrivals.iterrows()
+        ])
+    except pykonal.OutOfBoundsError:
+        return (np.inf)
+    return (np.median(np.abs(residuals)))
+
+
 def find_ray_idx(ray, vcells):
     """
     Determine the index of the Voronoi cell hosting each point on
@@ -260,31 +285,63 @@ def init_nearfield(far_field, origin):
     return (near_field)
 
 
-def iterate_inversion(payload, params):
+def iterate_inversion(payload, params, iiter):
     """
     Iterate the entire inversion process to update the velocity model
     and event locations.
 
-    :param payload:
-    :param params:
-    :return:
+    :param payload: Data payload containing df_events, df_arrivals, df_stations, vmodel_p, vmodel_s
+    :param params: Inversion parameters
     """
-    dslo = []
     # Broadcast parameters.
     COMM.bcast(params, root=ROOT_RANK)
+    # Update P-wave velocity model
+    params['phase'] = 'P'
+    payload['vmodel_p'] = update_velocity_model(payload, params)
+    write_vmodel_to_disk(payload['vmodel_p'], params, argc, iiter)
+    # Update S-wave velocity model
+    params['phase'] = 'S'
+    payload['vmodel_s'] = update_velocity_model(payload, params)
+    write_vmodel_to_disk(payload['vmodel_s'], params, argc, iiter)
+
+
+def update_velocity_model(payload, params):
+    """
+    Update the velocity model.
+
+    :param payload: Data payload containing df_events, df_arrivals, df_stations, vmodel_p, vmodel_s
+    :type payload: dict
+    :param params: Inversion parameters.
+    :type params: dict
+    :param phase: The phase to update model for ('P' or 'S')
+    :type phase: str
+
+    :return: Update VelocityModel object.
+    :rtype: VelocityModel
+    """
+    logger.info(f'Updating the {params["phase"]}-wave velocity model.')
+    logger.debug(f'Temporary directory is {payload["temp_dir"]}')
+    if params['phase'] == 'P':
+        payload['vmodel'] = payload['vmodel_p']
+    elif params['phase'] == 'S':
+        payload['vmodel'] = payload['vmodel_s']
+    else:
+        raise (NotImplementedError(f'Did not recognize phase type {params["phase"]}'))
+    # Subset arrivals for the correct phase
+    df_arrivals = payload['df_arrivals']
+    payload['df_arrivals'] = df_arrivals[df_arrivals['phase'] == params['phase']]
+    dslo = []
     # Iterate over different realizations of the random sampling.
     for ireal in range(params['nreal']):
-        logger.info(f'Realizing random trial #{ireal+1} (/{params["nreal"]}).')
+        logger.info(f'Realizing random trial #{ireal+1} of {params["nreal"]}.')
         dslo.append(realize_random_trial(payload, params))
+    # Replace the full df_arrivals data set in the payload.
+    payload['df_arrivals'] = df_arrivals
     # Update the velocity model
     vmodel = payload['vmodel']
     dslo = np.mean(dslo, axis=0).reshape(vmodel.grid.npts)
     vmodel.velocity = np.power((np.power(vmodel.velocity, -1) + dslo), -1)
-    payload['vmodel'] = vmodel
-
-    # Update event locations here.
-
-    return (payload)
+    return (vmodel)
 
 
 def load_event_data(argc, params):
@@ -297,7 +354,7 @@ def load_event_data(argc, params):
     return (df_events, df_arrivals)
 
 
-def load_initial_velocity_model(params):
+def load_initial_velocity_model(params, phase):
     """
     Load the initial velocity model.
 
@@ -316,10 +373,12 @@ def load_initial_velocity_model(params):
         params['drad'], np.radians(params['dlat']), np.radians(params['dlon'])
     )
     grid.npts = params['nrad'], params['nlat'], params['nlon']
-    if params['phase'] == 'P':
+    if phase == 'P':
         velocity = 6. * np.ones(grid.npts)
-    else:
+    elif phase == 'S':
         velocity = 3.74 * np.ones(grid.npts)
+    else:
+        raise (NotImplementedError(f'Did not understand phase type: {phase}'))
     vmodel = VelocityModel(grid, velocity)
     return (vmodel)
 
@@ -378,6 +437,88 @@ def load_solver_from_scratch(station, vmodel, temp_dir, tag=None):
         npts=far_field.pgrid.npts
     )
     return (far_field)
+
+
+def locate_events(
+        df_arrivals,
+        df_stations,
+        vmodel_p,
+        vmodel_s,
+):
+    '''
+    df_arrivals :: pandas.DataFrame :: Arrival data. Must include
+        (event_id, station_id, phase, time) fields with (int, str, str,
+        float) dtypes, respectively.
+    df_stations :: pandas.DataFrame :: Network geometry data. Must
+        include (station_id, lat, lon, depth) fields with (str, float,
+        float, float) dtypes, respectively.
+    vmodel_p :: VelocityModel :: P-wave velocity model.
+    vmodel_s :: VelocityModel :: S-wave velocity model.
+
+    return :: pandas.DataFrame :: Event locations. Includes (event_id,
+        lat, lon, depth, res) fields with (int, float, float, float,
+        float) dtypes, respectively.
+    '''
+    latmax, lonmin, dmax = sph2geo(vmodel_p.grid.min_coords)
+    latmin, lonmax, dmin = sph2geo(vmodel_p.grid.max_coords)
+    bounds = (
+        (latmin, latmax),
+        (lonmin, lonmax),
+        (dmin, dmax),
+        (0, (pd.to_datetime('now') - pd.to_datetime(0)).total_seconds())
+    )
+    df_events = pd.DataFrame(columns=['event_id', 'lat', 'lon', 'depth', 'time', 'res'])
+    #     with tempfile.TemporaryDirectory() as temp_dir:
+    temp_dir = os.path.join(
+        os.environ['HOME'],
+        'scratch',
+        'traveltimes'
+    )
+    for event_id in df_arrivals['event_id'].unique():
+        print(f'Locating event #{event_id}')
+        location = locate_event(
+            df_arrivals.set_index('event_id').loc[event_id],
+            df_stations,
+            vmodel_p,
+            vmodel_s,
+            temp_dir,
+            bounds
+        )
+        df_append = pd.DataFrame(
+            [location.x],
+            columns=['lat', 'lon', 'depth', 'time']
+        )
+        df_append['res'] = location.fun
+        df_append['event_id'] = event_id
+        df_events = df_events.append(
+            df_append, ignore_index=True, sort=True
+        )
+    return (df_events)
+
+
+def locate_event(df_arrivals, df_stations, vmodel_p, vmodel_s, temp_dir, bounds):
+    tti = dict()
+    for arrival_idx, arrival in df_arrivals.iterrows():
+        station_id, phase = arrival[['station_id', 'phase']]
+        fname = os.path.join(temp_dir, f'{station_id}.{phase}.npz')
+        if not os.path.isfile(fname):
+            payload = dict(
+                temp_dir=temp_dir,
+                df_stations=df_stations.set_index('station_id'),
+                vmodel=vmodel_p if phase == 'P' else vmodel_s
+            )
+            solver = load_solver_from_scratch(payload, station_id, tag=phase)
+        else:
+            solver = load_solver_from_disk(fname)
+        if station_id not in tti:
+            tti[station_id] = dict()
+        tti[station_id][phase] = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
+    return (
+        scipy.optimize.differential_evolution(
+            cost_function,
+            bounds,
+            args=(df_arrivals, tti), polish=True)
+    )
 
 
 def process_sample(df_stations, sample_payload):
@@ -460,16 +601,19 @@ def realize_random_trial(payload, params):
     vcells, G_proj = generate_projection_matrix(payload['vmodel'].grid, params['ncell'])
     df_sample = sample_observed_data(params, payload)
     # Broadcast payload.
+    logger.debug('Broadcasting sample payload')
     sample_payload = COMM.bcast(
         dict(
             df_sample=df_sample,
             df_events=payload['df_events'],
             vmodel=payload['vmodel'],
             vcells=vcells,
-            temp_dir=payload['temp_dir']
+            temp_dir=os.path.join(payload['temp_dir'], params['phase'])
         ),
         root=ROOT_RANK
     )
+    logger.debug('Sample payload broadcasted')
+    logger.debug('Scattering stations')
     df_stations = COMM.scatter(
         np.array_split(
             payload['df_stations'][
@@ -483,6 +627,7 @@ def realize_random_trial(payload, params):
         ),
         root=ROOT_RANK
     )
+    logger.debug('Stations scattered')
     dobs, colidp, nsegs, nonzerop = process_sample(df_stations, sample_payload)
     dobs = np.array(sum(COMM.gather(dobs, root=ROOT_RANK), []))
     col_idx_proj = np.array(sum(COMM.gather(colidp, root=ROOT_RANK), []))
@@ -631,24 +776,26 @@ def root_main(argc, params):
     df_events, df_arrivals = load_event_data(argc, params)
     df_stations = load_network_data(argc)
     df_arrivals = sanitize_arrivals(df_arrivals, df_stations)
-    # Subset arrivals for the correct phase.
-    df_arrivals = df_arrivals[df_arrivals['phase'] == params['phase']]
     # Load initial velocity model.
-    vmodel = load_initial_velocity_model(params)
+    vmodel_p = load_initial_velocity_model(params, 'P')
+    vmodel_s = load_initial_velocity_model(params, 'S')
     payload = dict(
         df_events=df_events,
         df_arrivals=df_arrivals,
         df_stations=df_stations,
-        vmodel=vmodel
+        vmodel_p=vmodel_p,
+        vmodel_s=vmodel_s
     )
     # Create a temporary working directory:
     with tempfile.TemporaryDirectory() as temp_dir:
         payload['temp_dir'] = temp_dir
+        # Make sub-directories for P- and S-wave data.
+        os.mkdir(os.path.join(temp_dir, 'P'))
+        os.mkdir(os.path.join(temp_dir, 'S'))
         # Iterate the entire inversion process.
         for iiter in range(params['niter']):
-            logger.info(f'Stating iteration #{iiter+1} (/{params["niter"]}).')
-            payload = iterate_inversion(payload, params)
-            write_vmodel_to_disk(vmodel, params, argc, iiter)
+            logger.info(f'Stating iteration #{iiter+1} of {params["niter"]}.')
+            payload = iterate_inversion(payload, params, iiter)
 
 
 def worker_main():
@@ -660,16 +807,18 @@ def worker_main():
     # Receive parameters.
     params = COMM.bcast(None, root=ROOT_RANK)
     # Iterate over different realizations of the random sampling.
-    for i in range(params['nreal']):
-        # Receive payload.
-        sample_payload = COMM.bcast(None, root=ROOT_RANK)
-        # Receive list of stations to process
-        df_stations = COMM.scatter(None, root=ROOT_RANK)
-        dobs, colidp, nsegs, nonzerop = process_sample(df_stations, sample_payload)
-        COMM.gather(dobs, root=ROOT_RANK)
-        COMM.gather(colidp, root=ROOT_RANK)
-        COMM.gather(nsegs, root=ROOT_RANK)
-        COMM.gather(nonzerop, root=ROOT_RANK)
+    for iiter in range(params['niter']):
+        for phase in ('P', 'S'):
+            for ireal in range(params['nreal']):
+                # Receive payload.
+                sample_payload = COMM.bcast(None, root=ROOT_RANK)
+                # Receive list of stations to process
+                df_stations = COMM.scatter(None, root=ROOT_RANK)
+                dobs, colidp, nsegs, nonzerop = process_sample(df_stations, sample_payload)
+                COMM.gather(dobs, root=ROOT_RANK)
+                COMM.gather(colidp, root=ROOT_RANK)
+                COMM.gather(nsegs, root=ROOT_RANK)
+                COMM.gather(nonzerop, root=ROOT_RANK)
 
 
 def signal_handler(sig, frame):
