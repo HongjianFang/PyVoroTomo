@@ -415,6 +415,7 @@ def process_station(station, station_payload):
     :return:
     """
     station_id, lat, lon, depth = station[['station_id', 'lat', 'lon', 'depth']]
+    logger.debug(f'Processing station {station_id}')
     df_obs = station_payload['df_obs']
     df_events = station_payload['df_events'].set_index('event_id')
     vcells = station_payload['vcells']
