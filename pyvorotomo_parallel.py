@@ -1,5 +1,7 @@
 import argparse
 import configparser
+import logging
+import mpi4py.MPI
 import numpy as np
 import os
 import pandas as pd
@@ -8,10 +10,15 @@ import scipy.optimize
 import scipy.sparse
 import scipy.sparse.linalg
 import scipy.spatial
+import signal
 import tempfile
-from mpi4py import MPI
+import warnings
 
-COMM = MPI.COMM_WORLD
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
+
+PROCESSOR_NAME = mpi4py.MPI.Get_processor_name()
+COMM = mpi4py.MPI.COMM_WORLD
 WORLD_SIZE = COMM.Get_size()
 RANK = COMM.Get_rank()
 ROOT_RANK: int = 0
@@ -42,6 +49,18 @@ def parse_args():
         default='pyvorotomo.cfg',
         type=str,
         help='Output directory'
+    )
+    parser.add_argument(
+        "-l",
+        "--logfile",
+        type=str,
+        help="log file"
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="verbose"
     )
     return (parser.parse_args())
 
@@ -75,6 +94,38 @@ def load_params(argc):
     params['damp'] = parser.getfloat('Convergence Parameters', 'damp')
     return (params)
 
+
+def configure_logging(verbose, logfile):
+    """
+    A utility function to configure logging.
+    """
+    if verbose is True:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+    for name in (__name__,):
+        logger = logging.getLogger(name)
+        logger.setLevel(level)
+        if level == logging.DEBUG:
+            formatter = logging.Formatter(fmt="%(asctime)s::%(levelname)s::"\
+                    "%(funcName)s()::%(lineno)d::{:s}::{:04d}:: "\
+                    "%(message)s".format(PROCESSOR_NAME, RANK),
+                    datefmt="%Y%jT%H:%M:%S")
+        else:
+            formatter = logging.Formatter(fmt="%(asctime)s::%(levelname)s::"\
+                    "{:s}::{:04d}:: %(message)s".format(PROCESSOR_NAME, RANK),
+                    datefmt="%Y%jT%H:%M:%S")
+        if logfile is not None:
+            file_handler = logging.FileHandler(logfile)
+            file_handler.setLevel(level)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(level)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+
+
 ###############################################################################
 # Class definitions
 
@@ -82,56 +133,60 @@ class VelocityModel(object):
     """
     A simple container class.
     """
+
     def __init__(self, grid, velocity):
-        self.grid     = grid
+        self.grid = grid
         self.velocity = velocity
+
 
 ###############################################################################
 # Geometry convenience functions.
 
 def geo2sph(arr):
-    '''
+    """
     Map Geographical coordinates to spherical coordinates.
-    '''
+    """
     geo = np.array(arr, dtype=DTYPE_REAL)
     sph = np.empty_like(geo)
-    sph[...,0] = EARTH_RADIUS - geo[...,2]
-    sph[...,1] = np.pi/2 - np.radians(geo[...,0])
-    sph[...,2] = np.radians(geo[...,1])
+    sph[..., 0] = EARTH_RADIUS - geo[..., 2]
+    sph[..., 1] = np.pi / 2 - np.radians(geo[..., 0])
+    sph[..., 2] = np.radians(geo[..., 1])
     return (sph)
 
 
 def sph2geo(arr):
-    '''
+    """
     Map spherical coordinates to geographic coordinates.
-    '''
+    """
     sph = np.array(arr, dtype=DTYPE_REAL)
     geo = np.empty_like(sph)
-    geo[...,0] = np.degrees(np.pi/2 - sph[...,1])
-    geo[...,1] = np.degrees(sph[...,2])
-    geo[...,2] = EARTH_RADIUS - sph[...,0]
+    geo[..., 0] = np.degrees(np.pi / 2 - sph[..., 1])
+    geo[..., 1] = np.degrees(sph[..., 2])
+    geo[..., 2] = EARTH_RADIUS - sph[..., 0]
     return (geo)
 
 
 def sph2xyz(arr):
-    '''
+    """
     Map spherical coordinates to Cartesian coordinates.
-    '''
+    """
     sph = np.array(arr, dtype=DTYPE_REAL)
     xyz = np.empty_like(sph)
-    xyz[...,0] = sph[...,0] * np.sin(sph[...,1]) * np.cos(sph[...,2])
-    xyz[...,1] = sph[...,0] * np.sin(sph[...,1]) * np.sin(sph[...,2])
-    xyz[...,2] = sph[...,0] * np.cos(sph[...,1])
+    xyz[..., 0] = sph[..., 0] * np.sin(sph[..., 1]) * np.cos(sph[..., 2])
+    xyz[..., 1] = sph[..., 0] * np.sin(sph[..., 1]) * np.sin(sph[..., 2])
+    xyz[..., 2] = sph[..., 0] * np.cos(sph[..., 1])
     return (xyz)
+
+
 ###############################################################################
 
 
 ###############################################################################
 def find_ray_idx(ray, vcells):
-    '''
+    """
     Determine the index of the Voronoi cell hosting each point on
     the ray path.
-    '''
+    """
     dist = scipy.spatial.distance.cdist(sph2xyz(ray), sph2xyz(vcells))
     argmin = np.argmin(dist, axis=1)
     idxs, counts = np.unique(argmin, return_counts=True)
@@ -139,10 +194,10 @@ def find_ray_idx(ray, vcells):
 
 
 def generate_projection_matrix(grid, ncell=300):
-    '''
+    """
     Generate the matrix to project each rectilinear grid node to its
     host Voronoi cell.
-    '''
+    """
     vcells = generate_voronoi_cells(grid, ncell)
     dist = scipy.spatial.distance.cdist(
         sph2xyz(grid.nodes.reshape(-1, 3)),
@@ -159,27 +214,27 @@ def generate_projection_matrix(grid, ncell=300):
 
 
 def generate_voronoi_cells(grid, ncell):
-    '''
+    """
     Generate a random set of points representing the centers of Voronoi cells.
-    '''
+    """
     delta = (grid.max_coords - grid.min_coords)
     return (np.random.rand(ncell, 3) * delta + grid.min_coords)
 
 
 def init_farfield(vmodel):
-    '''
+    """
     Initialize the far-field EikonalSolver with the given velocity model.
-    '''
-    far_field                      = pykonal.EikonalSolver(coord_sys='spherical')
-    far_field.vgrid.min_coords     = vmodel.grid.min_coords
+    """
+    far_field = pykonal.EikonalSolver(coord_sys='spherical')
+    far_field.vgrid.min_coords = vmodel.grid.min_coords
     far_field.vgrid.node_intervals = vmodel.grid.node_intervals
-    far_field.vgrid.npts           = vmodel.grid.npts
-    far_field.vv                   = vmodel.velocity
+    far_field.vgrid.npts = vmodel.grid.npts
+    far_field.vv = vmodel.velocity
     return (far_field)
 
 
 def init_nearfield(far_field, origin):
-    '''
+    """
     Initialize the near-field EikonalSolver.
 
     :param origin: Station location in spherical coordinates.
@@ -187,19 +242,19 @@ def init_nearfield(far_field, origin):
 
     :return: Near-field EikonalSolver
     :rtype: pykonal.EikonalSolver
-    '''
-    drho                            = far_field.vgrid.node_intervals[0] / 5
-    near_field                      = pykonal.EikonalSolver(coord_sys='spherical')
-    near_field.vgrid.min_coords     = drho, 0, 0
-    near_field.vgrid.node_intervals = drho, np.pi/20, np.pi/20
-    near_field.vgrid.npts           = 100, 21, 40
+    """
+    drho = far_field.vgrid.node_intervals[0] / 5
+    near_field = pykonal.EikonalSolver(coord_sys='spherical')
+    near_field.vgrid.min_coords = drho, 0, 0
+    near_field.vgrid.node_intervals = drho, np.pi / 20, np.pi / 20
+    near_field.vgrid.npts = 100, 21, 40
     near_field.transfer_velocity_from(far_field, origin)
     vvi = pykonal.LinearInterpolator3D(near_field.vgrid, near_field.vv)
 
     for it in range(near_field.pgrid.npts[1]):
         for ip in range(near_field.pgrid.npts[2]):
             idx = (0, it, ip)
-            near_field.uu[idx]     = near_field.pgrid[idx + (0,)] / vvi(near_field.pgrid[idx])
+            near_field.uu[idx] = near_field.pgrid[idx + (0,)] / vvi(near_field.pgrid[idx])
             near_field.is_far[idx] = False
             near_field.close.push(*idx)
     return (near_field)
@@ -218,7 +273,8 @@ def iterate_inversion(payload, params):
     # Broadcast parameters.
     COMM.bcast(params, root=ROOT_RANK)
     # Iterate over different realizations of the random sampling.
-    for i in range(params['nreal']):
+    for ireal in range(params['nreal']):
+        logger.info(f'Realizing random trial #{ireal+1} (/{params["nreal"]}).')
         dslo.append(realize_random_trial(payload, params))
     # Update the velocity model
     vmodel = payload['vmodel']
@@ -287,10 +343,10 @@ def load_solver_from_disk(fname):
     """
     solver = pykonal.EikonalSolver(coord_sys='spherical')
     with np.load(fname) as npz:
-        solver.vgrid.min_coords     = npz['min_coords']
+        solver.vgrid.min_coords = npz['min_coords']
         solver.vgrid.node_intervals = npz['node_intervals']
-        solver.vgrid.npts           = npz['npts']
-        solver.uu[...]              = npz['uu']
+        solver.vgrid.npts = npz['npts']
+        solver.uu[...] = npz['uu']
     return (solver)
 
 
@@ -305,7 +361,7 @@ def load_solver_from_scratch(station, vmodel, temp_dir, tag=None):
     :return:
     """
     rho0, theta0, phi0 = geo2sph(station[['lat', 'lon', 'depth']].values)
-    far_field  = init_farfield(vmodel)
+    far_field = init_farfield(vmodel)
     near_field = init_nearfield(far_field, (rho0, theta0, phi0))
     near_field.solve()
     far_field.transfer_travel_times_from(near_field, (-rho0, theta0, phi0), set_alive=True)
@@ -392,6 +448,7 @@ def process_station(station, station_payload):
             continue
     return (dobs, colidp, nsegs, nonzerop)
 
+
 def realize_random_trial(payload, params):
     """
 
@@ -437,7 +494,6 @@ def realize_random_trial(payload, params):
         (nonzero_proj, (row_idx_proj, col_idx_proj)),
         shape=(len(nsegs), params['ncell'])
     )
-
 
     x = scipy.sparse.linalg.lsmr(
         G,
@@ -507,7 +563,7 @@ def sample_observed_data(params, payload, homo_sample = False, ncell = 500):
 #        payload['df_events'][['time', 'event_id']],
         eventsused[['time', 'event_id']],
         on='event_id',
-        suffixes=('_arrival','_origin')
+        suffixes=('_arrival', '_origin')
     )
     df['travel_time'] = (df['time_arrival'] - df['time_origin'])
     # Remove any arrivals at stations without metadata
@@ -549,6 +605,7 @@ def write_vmodel_to_disk(vmodel, params, argc, iiter):
         argc.output_dir,
         f'model.{params["phase"]}.{iiter + 1:03d}.{nreal}.{nsamp}.{ncell}.npz',
     )
+    logger.info(f"Saving velocity model to disk: {fname}")
     if not os.path.isdir(argc.output_dir):
         os.makedirs(argc.output_dir)
     # Save the update velocity model to disk.
@@ -563,15 +620,12 @@ def write_vmodel_to_disk(vmodel, params, argc, iiter):
 
 ###############################################################################
 
-def root_main():
+def root_main(argc, params):
     """
     The main control loop for the root process.
     :return:
     """
-    # Parse command line arguments.
-    argc = parse_args()
-    # Load parameters for parameter file.
-    params = load_params(argc)
+    logger.info("Stating root thread.")
     # Load event and network data.
     df_events, df_arrivals = load_event_data(argc, params)
     df_stations = load_network_data(argc)
@@ -590,9 +644,10 @@ def root_main():
     with tempfile.TemporaryDirectory() as temp_dir:
         payload['temp_dir'] = temp_dir
         # Iterate the entire inversion process.
-        for i in range(params['niter']):
+        for iiter in range(params['niter']):
+            logger.info(f'Stating iteration #{iiter+1} (/{params["niter"]}).')
             payload = iterate_inversion(payload, params)
-            write_vmodel_to_disk(vmodel, params, argc, i)
+            write_vmodel_to_disk(vmodel, params, argc, iiter)
 
 
 def worker_main():
@@ -600,6 +655,7 @@ def worker_main():
     The main control loop for worker processes.
     :return:
     """
+    logger.info("Stating worker thread.")
     # Receive parameters.
     params = COMM.bcast(None, root=ROOT_RANK)
     # Iterate over different realizations of the random sampling.
@@ -615,9 +671,25 @@ def worker_main():
         COMM.gather(nonzerop, root=ROOT_RANK)
 
 
+def signal_handler(sig, frame):
+    raise(SystemError("Interrupting signal received... aborting"))
+
 
 if __name__ == '__main__':
+    # Add some signal handlers to abort all threads.
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGCONT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    logger = logging.getLogger(__name__)
+    # Parse command line arguments.
+    argc = parse_args()
+    # Load parameters for parameter file.
+    params = load_params(argc)
+    # Configure logging.
+    configure_logging(argc.verbose, argc.logfile)
     if RANK == ROOT_RANK:
-        root_main()
+        # Start the root thread's main loop.
+        root_main(argc, params)
     else:
+        # Start the worker threads main loop.
         worker_main()
