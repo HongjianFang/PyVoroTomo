@@ -299,19 +299,19 @@ def iterate_inversion(payload, params, argc, iiter):
     COMM.bcast(params, root=ROOT_RANK)
     # Update velocity models.
     # Create a temporary working directory:
-    #with tempfile.TemporaryDirectory(dir=argc.output_dir) as temp_dir:
-    #    payload['temp_dir'] = temp_dir
-    #    # Make sub-directories for P- and S-wave data.
-    #    os.mkdir(os.path.join(temp_dir, 'P'))
-    #    os.mkdir(os.path.join(temp_dir, 'S'))
-    #    # Update P-wave velocity model
-    #    params['phase'] = 'P'
-    #    payload['vmodel_p'] = update_velocity_model(payload, params)
-    #    write_vmodel_to_disk(payload['vmodel_p'], params, argc, iiter)
-    #    # Update S-wave velocity model
-    #    params['phase'] = 'S'
-    #    payload['vmodel_s'] = update_velocity_model(payload, params)
-    #    write_vmodel_to_disk(payload['vmodel_s'], params, argc, iiter)
+    with tempfile.TemporaryDirectory(dir=argc.output_dir) as temp_dir:
+        payload['temp_dir'] = temp_dir
+        # Make sub-directories for P- and S-wave data.
+        os.mkdir(os.path.join(temp_dir, 'P'))
+        os.mkdir(os.path.join(temp_dir, 'S'))
+        # Update P-wave velocity model
+        params['phase'] = 'P'
+        payload['vmodel_p'] = update_velocity_model(payload, params)
+        write_vmodel_to_disk(payload['vmodel_p'], params, argc, iiter)
+        # Update S-wave velocity model
+        params['phase'] = 'S'
+        payload['vmodel_s'] = update_velocity_model(payload, params)
+        write_vmodel_to_disk(payload['vmodel_s'], params, argc, iiter)
     # Update locations.
     # Create a temporary working directory:
     with tempfile.TemporaryDirectory(dir=argc.output_dir) as temp_dir:
@@ -320,7 +320,8 @@ def iterate_inversion(payload, params, argc, iiter):
         os.mkdir(os.path.join(temp_dir, 'P'))
         os.mkdir(os.path.join(temp_dir, 'S'))
         # Locate earthquakes.
-        update_event_locations(payload, params)
+        payload['df_events'] = update_event_locations(payload, params)
+        write_events_to_disk(payload['df_events'], params, argc, iiter)
 
 
 def update_velocity_model(payload, params):
@@ -494,11 +495,12 @@ def update_event_locations(payload, params):
     :rtype: pandas.DataFrame
     """
     COMM.bcast(payload, root=ROOT_RANK)
-    logger.debug('Scattering events.')
+    logger.debug(f'Scattering {len(payload["df_events"])} events.')
     df_events = COMM.scatter(
         np.array_split(payload['df_events'], WORLD_SIZE),
         root=ROOT_RANK
     )
+    logger.debug(f'Received {len(df_events)} scattered events.')
     df_arrivals = payload['df_arrivals']
     df_arrivals = df_arrivals[df_arrivals['event_id'].isin(df_events['event_id'])]
     df_events = locate_events(
@@ -507,6 +509,10 @@ def update_event_locations(payload, params):
         payload['vmodel_p'],
         payload['vmodel_s']
     )
+    df_events = pd.DataFrame()
+    for df in COMM.gather(df_events, root=ROOT_RANK):
+        df_events = df_events.append(df, ignore_index=True)
+    return (df_events)
 
 def locate_events(
     df_arrivals,
@@ -537,9 +543,13 @@ def locate_events(
         (0, (pd.to_datetime('now')-pd.to_datetime(0)).total_seconds())
     )
     df_events = pd.DataFrame(columns=['event_id', 'lat', 'lon', 'depth', 'time', 'res'])
+    ievent = 0
+    event_ids = df_arrivals['event_id'].unique()
+    nev = len(event_ids)
     with tempfile.TemporaryDirectory() as temp_dir:
-        for event_id in df_arrivals['event_id'].unique():
-            logger.debug(f'Locating event #{event_id}')
+        for event_id in event_ids:
+            ievent += 1
+            logger.debug(f'Locating event #{ievent} of {nev} (event id: {event_id})')
             location = locate_event(
                 df_arrivals.set_index('event_id').loc[event_id],
                 df_stations,
@@ -801,6 +811,30 @@ def sanitize_arrivals(df_arrivals, df_stations):
     )
 
 
+def write_events_to_disk(df_events, params, argc, iiter):
+    """
+    Write event locations to disk.
+
+    :param df_events:
+    :param params:
+    :param argc:
+    :return:
+    """
+    nreal = params['nreal']
+    nsamp = params['nsamp']
+    ncell = params['ncell']
+    fname = os.path.join(
+        argc.output_dir,
+        f'events.{iiter + 1:03d}.{nreal}.{nsamp}.{ncell}.h5',
+    )
+    logger.info(f"Saving events to disk: {fname}")
+    if not os.path.isdir(argc.output_dir):
+        os.makedirs(argc.output_dir)
+    # Save the updated event locations to disk.
+    with pd.HDFStore(fname) as store:
+        store['events'] = df_events
+
+
 def write_vmodel_to_disk(vmodel, params, argc, iiter):
     """
     Write velocity model to disk.
@@ -868,17 +902,17 @@ def worker_main():
     params = COMM.bcast(None, root=ROOT_RANK)
     # Iterate over different realizations of the random sampling.
     for iiter in range(params['niter']):
-        #for phase in ('P', 'S'):
-        #    for ireal in range(params['nreal']):
-        #        # Receive payload.
-        #        sample_payload = COMM.bcast(None, root=ROOT_RANK)
-        #        # Receive list of stations to process
-        #        df_stations = COMM.scatter(None, root=ROOT_RANK)
-        #        dobs, colidp, nsegs, nonzerop = process_sample(df_stations, sample_payload)
-        #        COMM.gather(dobs, root=ROOT_RANK)
-        #        COMM.gather(colidp, root=ROOT_RANK)
-        #        COMM.gather(nsegs, root=ROOT_RANK)
-        #        COMM.gather(nonzerop, root=ROOT_RANK)
+        for phase in ('P', 'S'):
+            for ireal in range(params['nreal']):
+                # Receive payload.
+                sample_payload = COMM.bcast(None, root=ROOT_RANK)
+                # Receive list of stations to process
+                df_stations = COMM.scatter(None, root=ROOT_RANK)
+                dobs, colidp, nsegs, nonzerop = process_sample(df_stations, sample_payload)
+                COMM.gather(dobs, root=ROOT_RANK)
+                COMM.gather(colidp, root=ROOT_RANK)
+                COMM.gather(nsegs, root=ROOT_RANK)
+                COMM.gather(nonzerop, root=ROOT_RANK)
         payload = COMM.bcast(None, root=ROOT_RANK)
         df_events = COMM.scatter(None, root=ROOT_RANK)
         df_arrivals = payload['df_arrivals']
@@ -889,6 +923,7 @@ def worker_main():
             payload['vmodel_p'],
             payload['vmodel_s']
         )
+        COMM.gather(df_events, root=ROOT_RANK)
 
 
 def signal_handler(sig, frame):
@@ -900,14 +935,14 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGCONT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    # Parse command line arguments.
+    argc = parse_args()
+    # Configure logging.
+    configure_logging(argc.verbose, argc.logfile)
     logger = logging.getLogger(__name__)
     if RANK == ROOT_RANK:
-        # Parse command line arguments.
-        argc = parse_args()
         # Load parameters for parameter file.
         params = load_params(argc)
-        # Configure logging.
-        configure_logging(argc.verbose, argc.logfile)
         # Start the root thread's main loop.
         root_main(argc, params)
     else:
