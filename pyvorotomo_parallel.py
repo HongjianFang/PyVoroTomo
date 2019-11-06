@@ -453,36 +453,76 @@ def realize_random_trial(payload, params):
     return (dslo)
 
 
-def sample_observed_data(params, payload):
+def sample_observed_data(params, payload, homo_sample = False, ncell = 500):
     """
     Return a random sample of arrivals from the observed data set.
+    nsamp now represents how many events are used in the inversion, 
+    rather than how many travel time data.
 
     :param params:
     :param payload:
     :return:
     """
+    events = payload['df_events']
+    if homo_sample:
+        lat_s = events['lat'].min()
+        lat_n = events['lat'].max()
+        lon_w = events['lon'].min()
+        lon_e = events['lon'].max()
+        dep_u = events['depth'].min()
+        dep_d = events['depth'].max()
+
+        rlat = np.random.rand(ncell,)
+        rlat = lat_s+(lat_n-lat_s)*rlat
+        rlon = np.random.rand(ncell,)
+        rlon = lon_w+(lon_e-lon_w)*rlon
+        rdep = np.random.rand(ncell,)
+        rdep = dep_u+(dep_d-dep_u)*rdep
+
+        cell3d = np.vstack([rdep,rlat,rlon]).T
+        cell3d = geo2sph(cell3d)
+        cell3d = sph2xyz(cell3d)
+        
+        evxyz = events[['depth','lat','lon']]
+        evxyz = geo2sph(evxyz)
+        evxyz = sph2xyz(evxyz)
+
+        dist = scipy.spatial.distance.cdist(evxyz,cell3d)
+        eveidx = np.argmin(dist,axis = 1)
+        
+        events['cellid'] = eveidx
+        evnum = events.groupby('cellid').count()
+
+        evnum = evnum.rename(columns={'time':'evnum'})
+        evnum = evnum[['evnum']]
+        events = events.merge(evnum,on = 'cellid')
+        events['weight'] =  1.0/events['evnum']
+        eventsused = events.sample(n=params['nsamp'],weights=weight)
+    else:
+        eventsused = events.sample(
+                    n=params['nsamp']
+                )
+
     df = payload['df_arrivals'].merge(
-        payload['df_events'][['time', 'event_id']],
+#        payload['df_events'][['time', 'event_id']],
+        eventsused[['time', 'event_id']],
         on='event_id',
         suffixes=('_arrival','_origin')
     )
     df['travel_time'] = (df['time_arrival'] - df['time_origin'])
     # Remove any arrivals at stations without metadata
     df = df[df['station_id'].isin(payload['df_stations']['station_id'].unique())]
-    return (
-        df.sort_values(
-            'station_id'
-        ).drop_duplicates( # There shouldn't be any duplicates in a clean data set.
-            subset=['station_id', 'event_id'],
-            keep=False
-        ).set_index(
-            ['station_id', 'event_id']
-        ).drop(
-            columns=['time_arrival', 'time_origin']
-        ).sample(
-            n=params['nsamp']
-        )
-    )
+    df = df.sort_values(
+                'station_id'
+                ).drop_duplicates( # There shouldn't be any duplicates in a clean data set.
+                    subset=['station_id', 'event_id'],
+                    keep=False
+                ).set_index(
+                    ['station_id', 'event_id']
+                ).drop(
+                    columns=['time_arrival', 'time_origin']
+                )
+    return df
 
 
 def sanitize_arrivals(df_arrivals, df_stations):
