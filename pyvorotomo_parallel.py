@@ -936,7 +936,9 @@ def _update_event_locations(payload, argc, params, iiter):
         if RANK == ROOT_RANK:
             logger.info(f'Updating event locations.')
         # Compute traveltime-lookup tables
+        logger.info("Computing P-wave traveltime-lookup tables.")
         compute_traveltime_lookup_tables(payload, 'P', wdir)
+        logger.info("Computing S-wave traveltime-lookup tables.")
         compute_traveltime_lookup_tables(payload, 'S', wdir)
         COMM.barrier()
         event_ids = COMM.scatter(
@@ -967,7 +969,7 @@ def _update_event_locations(payload, argc, params, iiter):
     finally:
         if RANK == ROOT_RANK:
             logger.debug(f'Removing working directory {wdir}')
-            #shutil.rmtree(wdir)
+            shutil.rmtree(wdir)
     return (df_events)
 
 
@@ -998,6 +1000,7 @@ def _update_velocity_model(payload, params, phase):
         if RANK == ROOT_RANK:
             logger.debug(f'Updating {phase}-wave velocity model')
         # Compute traveltime-lookup tables
+        logger.info(f"Computing {phase}-wave traveltime-lookup tables.")
         compute_traveltime_lookup_tables(payload, phase, wdir)
         COMM.barrier()
         vmodels = []
@@ -1013,7 +1016,7 @@ def _update_velocity_model(payload, params, phase):
     finally:
         if RANK == ROOT_RANK:
             logger.debug(f'Removing working directory {wdir}')
-            #shutil.rmtree(wdir)
+            shutil.rmtree(wdir)
     return (vmodel)
 
 
