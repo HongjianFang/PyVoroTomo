@@ -199,7 +199,6 @@ def compute_traveltime_lookup_table(station, vmodel, wdir, tag=None):
     :param tag:
     :return:
     """
-    logger.debug(f"Computing traveltime-lookup table for station {station['station_id']}")
     try:
         return (_compute_traveltime_lookup_table(station, vmodel, wdir, tag=tag))
     except Exception as exc:
@@ -334,7 +333,6 @@ def _generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, 
         fname = os.path.join(wdir, f'{station_id}.{phase}.npz')
         solver = load_solver_from_disk(fname)
         for event_id in df_sample.loc[station_id].index.values:
-            logger.debug(f'{station_id}, {event_id} {df_sample.loc[(station_id, event_id), "phase"]}')
             ret = trace_ray(
                 df_events.loc[[event_id]],
                 df_sample.loc[[(station_id, event_id)]],
@@ -1005,7 +1003,8 @@ def _update_velocity_model(payload, params, phase):
         if RANK == ROOT_RANK:
             logger.debug(f'Updating {phase}-wave velocity model')
         # Compute traveltime-lookup tables
-        logger.info(f"Computing {phase}-wave traveltime-lookup tables.")
+        if RANK == ROOT_RANK:
+            logger.info(f"Computing {phase}-wave traveltime-lookup tables.")
         compute_traveltime_lookup_tables(payload, phase, wdir)
         COMM.barrier()
         vmodels = []
