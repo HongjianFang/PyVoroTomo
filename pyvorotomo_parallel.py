@@ -336,14 +336,17 @@ def _generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, 
         for event_id in df_sample.loc[station_id].index.values:
             logger.debug(f'{station_id}, {event_id} {df_sample.loc[(station_id, event_id), "phase"]}')
             ret = trace_ray(
-                df_events.loc[event_id],
-                df_sample.loc[(station_id, event_id)],
+                df_events.loc[[event_id]],
+                df_sample.loc[[(station_id, event_id)]],
                 solver,
                 vcells
             )
             if ret is None:
                 continue
             residual, _col_idx_proj, _nsegs, _nonzero_proj = ret
+            if len (residual) > 0:
+                logger.debug(f"{station_id} {event_id}")
+                logger.debug(df_sample.loc[[(station_id, event_id)]])
             if np.abs(residual) > params['maxres']:
                 continue
             col_idx_proj = np.append(col_idx_proj, _col_idx_proj)
