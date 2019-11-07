@@ -936,9 +936,11 @@ def _update_event_locations(payload, argc, params, iiter):
         if RANK == ROOT_RANK:
             logger.info(f'Updating event locations.')
         # Compute traveltime-lookup tables
-        logger.info("Computing P-wave traveltime-lookup tables.")
+        if RANK == ROOT_RANK:
+            logger.info("Computing P-wave traveltime-lookup tables.")
         compute_traveltime_lookup_tables(payload, 'P', wdir)
-        logger.info("Computing S-wave traveltime-lookup tables.")
+        if RANK == ROOT_RANK:
+            logger.info("Computing S-wave traveltime-lookup tables.")
         compute_traveltime_lookup_tables(payload, 'S', wdir)
         COMM.barrier()
         event_ids = COMM.scatter(
