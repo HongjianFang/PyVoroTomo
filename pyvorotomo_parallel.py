@@ -1010,7 +1010,7 @@ def _update_velocity_model(payload, params, phase):
         vmodels = []
         for ireal in range(params['nreal']):
             if RANK == ROOT_RANK:
-                logger.info(f"Realizing random trial #{ireal} of {params['nreal']}")
+                logger.info(f"Realizing random trial #{ireal+1} of {params['nreal']}")
             vmodels.append(realize_random_trial(payload, params, phase, wdir))
         COMM.barrier()
         # Update velocity model
