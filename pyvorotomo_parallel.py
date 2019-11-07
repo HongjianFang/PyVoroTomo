@@ -350,6 +350,68 @@ def process_sample(df_stations, sample_payload):
         nonzerop += res[3]
     return (dobs, colidp, nsegs, nonzerop)
 
+def process_station_dd(station, station_payload):
+    """
+    Determine the matrix components for arrivals at *station*.
+    for Double difference data
+
+    :param args:
+    :return:
+    """
+    station_id, lat, lon, depth = station[['station_id', 'lat', 'lon', 'depth']]
+    #df_obs = station_payload['df_obs']
+    df_obs = station_payload['df_obs_dd']
+    df_events = station_payload['df_events'].set_index('event_id')
+    vcells = station_payload['vcells']
+    colidp = []
+    nsegs = []
+    nonzerop = []
+    dobs = []
+    fname = os.path.join(station_payload['temp_dir'], f'{station_id}.npz')
+    if os.path.isfile(fname):
+        solver = load_solver_from_disk(fname)
+    else:
+        solver = load_solver_from_scratch(station, station_payload['vmodel'], station_payload['temp_dir'])
+    tti = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
+    #for event_id in df_obs.index.unique():
+    step_size = solver._get_step_size()
+    for ii in range(df_obs):
+        event_id1 = df_obs['evid1'].iloc[ii]
+        event_id2 = df_obs['evid2'].iloc[ii]
+        event1 = df_events.loc[event_id1]
+        event2 = df_events.loc[event_id2]
+        try:
+            rho_src1, theta_src1, phi_src1 = geo2sph(event1[['lat', 'lon', 'depth']].values)
+            synthetic1 = tti((rho_src1, theta_src1, phi_src1))
+            rho_src2, theta_src2, phi_src2 = geo2sph(event2[['lat', 'lon', 'depth']].values)
+            synthetic2 = tti((rho_src2, theta_src2, phi_src2))
+            residual = df_obs['dd_time'].iloc[ii] - (synthetic1-synthetic2)
+            if abs(residual) > 3.0:
+                continue
+            ray1 = solver.trace_ray((rho_src1, theta_src1, phi_src1))
+            ray2 = solver.trace_ray((rho_src2, theta_src2, phi_src2))
+            idxs, counts = find_ray_idx(ray1, vcells)
+            nseg = len(idxs)
+            row1 = np.zeros(len(vcells),)
+            for iseg in range(nseg):
+                row1[idxs[iseg]] = step_size*counts[iseg]
+            idxs, counts = find_ray_idx(ray2, vcells)
+            nseg = len(idxs)
+            row2 = np.zeros(len(vcells),)
+            for iseg in range(nseg):
+                row2[idxs[iseg]] = step_size*counts[iseg]
+
+            row = row1 - row2
+            idxs = np.where(abs(row)>0.01)[0]
+            nseg = len(idxs)
+            nsegs.append(nseg)
+            dobs.append(residual)
+            for iseg in range(nseg):
+                colidp.append(idxs[iseg])
+                nonzerop.append(row[idxs[iseg]])
+        except pykonal.OutOfBoundsError as err:
+            continue
+    return (dobs, colidp, nsegs, nonzerop)
 
 def process_station(station, station_payload):
     """
