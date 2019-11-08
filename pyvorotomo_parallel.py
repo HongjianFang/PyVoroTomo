@@ -22,8 +22,12 @@ PROCESSOR_NAME = mpi4py.MPI.Get_processor_name()
 COMM = mpi4py.MPI.COMM_WORLD
 WORLD_SIZE = COMM.Get_size()
 RANK = COMM.Get_rank()
-ROOT_RANK: int = 0
-EARTH_RADIUS: float = 6371.
+ROOT_RANK = 0
+
+EVENT_REQUEST_TAG = 100
+EVENT_TRANSMISSION_TAG = 101
+
+EARTH_RADIUS = 6371.
 DTYPE_REAL = np.float64
 DTYPE_INT = np.int32
 
@@ -36,6 +40,7 @@ class VelocityModel(object):
     def __init__(self, grid, velocity):
         self.grid = grid
         self.velocity = velocity
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -169,14 +174,14 @@ def configure_logging(verbose, logfile):
         logger = logging.getLogger(name)
         logger.setLevel(level)
         if level == logging.DEBUG:
-            formatter = logging.Formatter(fmt="%(asctime)s::%(levelname)s::"\
-                    "%(funcName)s()::%(lineno)d::{:s}::{:04d}:: "\
-                    "%(message)s".format(PROCESSOR_NAME, RANK),
-                    datefmt="%Y%jT%H:%M:%S")
+            formatter = logging.Formatter(fmt="%(asctime)s::%(levelname)s::" \
+                                              "%(funcName)s()::%(lineno)d::{:s}::{:04d}:: " \
+                                              "%(message)s".format(PROCESSOR_NAME, RANK),
+                                          datefmt="%Y%jT%H:%M:%S")
         else:
-            formatter = logging.Formatter(fmt="%(asctime)s::%(levelname)s::"\
-                    "{:s}::{:04d}:: %(message)s".format(PROCESSOR_NAME, RANK),
-                    datefmt="%Y%jT%H:%M:%S")
+            formatter = logging.Formatter(fmt="%(asctime)s::%(levelname)s::" \
+                                              "{:s}::{:04d}:: %(message)s".format(PROCESSOR_NAME, RANK),
+                                          datefmt="%Y%jT%H:%M:%S")
         if logfile is not None:
             file_handler = logging.FileHandler(logfile)
             file_handler.setLevel(level)
@@ -204,6 +209,7 @@ def compute_traveltime_lookup_table(station, vmodel, wdir, tag=None):
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
+
 
 def _compute_traveltime_lookup_table(station, vmodel, wdir, tag=None):
     rho0, theta0, phi0 = geo2sph(station[['lat', 'lon', 'depth']].values)
@@ -234,7 +240,7 @@ def compute_traveltime_lookup_tables(payload, phase, wdir):
         df_stations, vmodel_p, vmodel_s.
     :param phase: Phase to update velocity model for.
     :param wdir: Temporary working directory.
-    :type wdir: tempfile.TemporaryDirectory
+    :type wdir: str
     """
     if RANK == ROOT_RANK:
         logger.debug(f'Computing {phase}-wave traveltime-lookup tables.')
@@ -284,6 +290,80 @@ def cost_function(loc, *args):
     return (np.median(np.abs(residuals)))
 
 
+def event_distribution_loop(event_ids):
+    """
+    Distribute events to worker threads.
+
+    :param event_ids: Event ids.
+    :return: None
+    """
+    logger.debug("Beginning event distribution loop.")
+    try:
+        return (_event_distribution_loop(event_ids))
+    except Exception as exc:
+        logger.error(exc)
+        sys.exit(-1)
+
+
+def _event_distribution_loop(event_ids):
+    nevent = len(event_ids)
+    ievent = 0
+    for event_id in event_ids:
+        ievent += 1
+        requesting_rank = COMM.recv(source=mpi4py.MPI.ANY_SOURCE, tag=EVENT_REQUEST_TAG)
+        logger.debug(f"Sending event #{ievent} of {nevent} (id #{event_id}) to processor rank {requesting_rank}")
+        COMM.send(event_id, dest=requesting_rank, tag=EVENT_TRANSMISSION_TAG)
+    for irank in range(WORLD_SIZE - 1):
+        requesting_rank = COMM.recv(source=mpi4py.MPI.ANY_SOURCE, tag=EVENT_REQUEST_TAG)
+        COMM.send(None, dest=requesting_rank, tag=EVENT_TRANSMISSION_TAG)
+    return (None)
+
+
+def event_location_loop(payload, wdir):
+    """
+    Receive and locate events.
+
+    :param payload:
+    :param argc:
+    :param params:
+    :return:
+    """
+    logger.debug("Beginning event location loop.")
+    try:
+        return (_event_location_loop(payload, wdir))
+    except Exception as exc:
+        logger.error(exc)
+        sys.exit(-1)
+
+
+def _event_location_loop(payload, wdir):
+    df_arrivals = payload['df_arrivals']
+    df_arrivals = df_arrivals.sort_values('event_id').set_index('event_id')
+    df_events = pd.DataFrame()
+    latmax, lonmin, dmax = sph2geo(payload['vmodel_p'].grid.min_coords)
+    latmin, lonmax, dmin = sph2geo(payload['vmodel_p'].grid.max_coords)
+    bounds = (
+        (latmin, latmax),
+        (lonmin, lonmax),
+        (dmin, dmax),
+        (0, (pd.to_datetime('now') - pd.to_datetime(0)).total_seconds())
+    )
+    while True:
+        # Request an event
+        COMM.send(RANK, dest=ROOT_RANK, tag=EVENT_REQUEST_TAG)
+        event_id = COMM.recv(source=ROOT_RANK, tag=EVENT_TRANSMISSION_TAG)
+        if event_id is None:
+            return (df_events)
+        logger.debug(f"Locating event id #{event_id}")
+        event = locate_event(
+            df_arrivals.loc[event_id],
+            bounds,
+            wdir
+        )
+        if event is not None:
+            df_events = df_events.append(event, ignore_index=True)
+
+
 def find_ray_idx(ray, vcells):
     """
     Determine the index of the Voronoi cell hosting each point on
@@ -301,6 +381,7 @@ def _find_ray_idx(ray, vcells):
     argmin = np.argmin(dist, axis=1)
     idxs, counts = np.unique(argmin, return_counts=True)
     return (idxs, counts)
+
 
 def generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj):
     """
@@ -320,6 +401,7 @@ def generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
+
 
 def _generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj):
     col_idx_proj = np.array([], dtype=DTYPE_INT)
@@ -342,7 +424,7 @@ def _generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, 
             if ret is None:
                 continue
             residual, _col_idx_proj, _nsegs, _nonzero_proj = ret
-            if len (residual) > 0:
+            if len(residual) > 0:
                 logger.debug(f"{station_id} {event_id}")
                 logger.debug(df_sample.loc[[(station_id, event_id)]])
             if np.abs(residual) > params['maxres']:
@@ -394,6 +476,7 @@ def generate_projection_matrix(grid, ncell=300):
         logger.error(exc)
         sys.exit(-1)
 
+
 def _generate_projection_matrix(grid, ncell=300):
     vcells = generate_voronoi_cells(grid, ncell)
     dist = scipy.spatial.distance.cdist(
@@ -426,6 +509,7 @@ def generate_voronoi_cells(grid, ncell):
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
+
 
 def _generate_voronoi_cells(grid, ncell):
     delta = (grid.max_coords - grid.min_coords)
@@ -615,6 +699,7 @@ def load_payload(argc, params):
     )
     return (payload)
 
+
 def load_solver_from_disk(fname):
     """
     Load the EikonalSolver saved to disk as fname.
@@ -643,10 +728,10 @@ def load_velocity_from_file(fname):
     """
     grid = pykonal.Grid3D(coord_sys='spherical')
     with np.load(fname) as infile:
-        grid.min_coords     = infile['min_coords']
+        grid.min_coords = infile['min_coords']
         grid.node_intervals = infile['node_intervals']
-        grid.npts           = infile['npts']
-        vmodel              = VelocityModel(grid=grid, velocity=infile['vv'])
+        grid.npts = infile['npts']
+        vmodel = VelocityModel(grid=grid, velocity=infile['vv'])
     return (vmodel)
 
 
@@ -668,6 +753,8 @@ def locate_event(df_arrivals, bounds, wdir):
 
 def _locate_event(df_arrivals, bounds, wdir):
     tti = dict()
+    if len(df_arrivals) < 4:  # TODO:: This should be a configuration-file parameter.
+        return (None)
     for arrival_idx, arrival in df_arrivals.iterrows():
         station_id, phase = arrival[['station_id', 'phase']]
         fname = os.path.join(wdir, f'{station_id}.{phase}.npz')
@@ -728,7 +815,7 @@ def realize_random_trial(payload, params, phase, wdir):
     :param params: Configuration-file parameters.
     :param phase: Phase to update velocity model for.
     :param wdir: Temporary working directory.
-    :type wdir: tempfile.TemporaryDirectory
+    :type wdir: str
     :return: Updated velocity model for one random realization.
     :rtype: VelocityModel
     """
@@ -898,6 +985,7 @@ def trace_ray(event, arrival, solver, vcells):
         logger.error(exc)
         raise
 
+
 def _trace_ray(event, arrival, solver, vcells):
     nonzerop = np.array([], dtype=DTYPE_REAL)
     tti = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
@@ -944,26 +1032,18 @@ def _update_event_locations(payload, argc, params, iiter):
             logger.info("Computing S-wave traveltime-lookup tables.")
         compute_traveltime_lookup_tables(payload, 'S', wdir)
         COMM.barrier()
-        event_ids = COMM.scatter(
-            np.array_split(payload['df_events']['event_id'].values, WORLD_SIZE),
-            root=ROOT_RANK
-        )
-        logger.debug(f"Locating {len(event_ids)} events")
-        df_arrivals = payload['df_arrivals']
-        df_arrivals = df_arrivals[df_arrivals['event_id'].isin(event_ids)]
-        latmax, lonmin, dmax = sph2geo(payload['vmodel_p'].grid.min_coords)
-        latmin, lonmax, dmin = sph2geo(payload['vmodel_p'].grid.max_coords)
-        bounds = (
-            (latmin, latmax),
-            (lonmin, lonmax),
-            (dmin, dmax),
-            (0, (pd.to_datetime('now')-pd.to_datetime(0)).total_seconds())
-        )
-        df_events = locate_events(df_arrivals, bounds, wdir)
-        logger.debug(f"Finished locating {len(df_events)} events.")
+        event_ids = payload['df_events']['event_id'].values
+        if RANK == ROOT_RANK:
+            event_distribution_loop(event_ids)
+            df_events = None
+        else:
+            df_events = event_location_loop(payload, wdir)
         df_events = COMM.gather(df_events, root=ROOT_RANK)
         if RANK == ROOT_RANK:
-            df_events = pd.concat(df_events, ignore_index=True)
+            df_events = pd.concat(
+                [df for df in df_events if df is not None],
+                ignore_index=True
+            )
             logger.debug(f"{len(df_events)} total events located.")
         df_events = COMM.bcast(
             None if RANK is not ROOT_RANK else df_events,
@@ -985,13 +1065,14 @@ def update_velocity_model(payload, params, phase):
     :param params: Configuration-file parameters.
     :param phase: Phase to update velocity model for.
     :param wdir: Temporary working directory.
-    :type wdir: tempfile.TemporaryDirectory
+    :type wdir: str
     """
     try:
         return (_update_velocity_model(payload, params, phase))
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
+
 
 def _update_velocity_model(payload, params, phase):
     vmodel = payload['vmodel_p'] if phase == 'P' else payload['vmodel_s']
@@ -1010,7 +1091,7 @@ def _update_velocity_model(payload, params, phase):
         vmodels = []
         for ireal in range(params['nreal']):
             if RANK == ROOT_RANK:
-                logger.info(f"Realizing random trial #{ireal+1} of {params['nreal']}")
+                logger.info(f"Realizing random trial #{ireal + 1} of {params['nreal']}")
             vmodels.append(realize_random_trial(payload, params, phase, wdir))
         COMM.barrier()
         # Update velocity model
@@ -1093,11 +1174,12 @@ def _write_vmodel_to_disk(vmodel, phase, params, argc, iiter):
         vv=vmodel.velocity
     )
 
+
 ###############################################################################
 
 
 def signal_handler(sig, frame):
-    raise(SystemError("Interrupting signal received... aborting"))
+    raise (SystemError("Interrupting signal received... aborting"))
 
 
 if __name__ == '__main__':
