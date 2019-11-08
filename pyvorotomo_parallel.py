@@ -254,7 +254,7 @@ def compute_traveltime_lookup_tables(payload, phase, wdir):
 def _compute_traveltime_lookup_tables(payload, phase, wdir):
     df_stations = COMM.scatter(
         None if RANK is not ROOT_RANK else np.array_split(
-            payload['df_stations'].sample(n=len(payload['df_stations'])),
+            payload['df_stations'].sample(frac=1),
             WORLD_SIZE
         ),
         root=ROOT_RANK
@@ -416,17 +416,14 @@ def _generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, 
         solver = load_solver_from_disk(fname)
         for event_id in df_sample.loc[station_id].index.values:
             ret = trace_ray(
-                df_events.loc[[event_id]],
-                df_sample.loc[[(station_id, event_id)]],
+                df_events.loc[event_id],
+                df_sample.loc[(station_id, event_id)],
                 solver,
                 vcells
             )
             if ret is None:
                 continue
             residual, _col_idx_proj, _nsegs, _nonzero_proj = ret
-            if len(residual) > 0:
-                logger.debug(f"{station_id} {event_id}")
-                logger.debug(df_sample.loc[[(station_id, event_id)]])
             if np.abs(residual) > params['maxres']:
                 continue
             col_idx_proj = np.append(col_idx_proj, _col_idx_proj)
@@ -916,7 +913,9 @@ def sample_observed_data(params, payload, phase, homo_sample=False, ncell=500):
     df_sample = df_arrivals.sample(weights='weight', n=params['nsamp'])
     df_sample['travel_time'] = df_sample['time_arrival'] - df_sample['time_origin']
     df_sample = df_sample[['station_id', 'event_id', 'phase', 'travel_time']]
-    df_sample = df_sample.sort_values(
+    df_sample = df_sample.drop_duplicates(
+        ['station_id', 'event_id']
+    ).sort_values(
         ['station_id', 'event_id']
     ).set_index(
         ['station_id', 'event_id']
