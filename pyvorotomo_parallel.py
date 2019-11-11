@@ -1031,12 +1031,13 @@ def _update_event_locations(payload, argc, params, iiter):
             logger.info("Computing S-wave traveltime-lookup tables.")
         compute_traveltime_lookup_tables(payload, 'S', wdir)
         COMM.barrier()
-        event_ids = payload['df_events']['event_id'].values
+        event_ids = payload['df_arrivals']['event_id'].unique()
         if RANK == ROOT_RANK:
             event_distribution_loop(event_ids)
             df_events = None
         else:
             df_events = event_location_loop(payload, wdir)
+            logger.debug(f"Located {len(df_events)} events.")
         df_events = COMM.gather(df_events, root=ROOT_RANK)
         if RANK == ROOT_RANK:
             df_events = pd.concat(
