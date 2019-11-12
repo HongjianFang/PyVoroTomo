@@ -101,10 +101,10 @@ def load_params(argc):
     params['depmin'] = parser.getfloat('Model Parameters', 'depmin')
     params['nlat'] = parser.getint('Model Parameters', 'nlat')
     params['nlon'] = parser.getint('Model Parameters', 'nlon')
-    params['nrad'] = parser.getint('Model Parameters', 'nrad')
+    params['ndep'] = parser.getint('Model Parameters', 'ndep')
     params['dlat'] = parser.getfloat('Model Parameters', 'dlat')
     params['dlon'] = parser.getfloat('Model Parameters', 'dlon')
-    params['drad'] = parser.getfloat('Model Parameters', 'drad')
+    params['ddep'] = parser.getfloat('Model Parameters', 'ddep')
     params['initial_vmodel_p'] = parser.get('Model Parameters', 'initial_vmodel_p')
     params['initial_vmodel_s'] = parser.get('Model Parameters', 'initial_vmodel_s')
     params['nsamp'] = parser.getint('Data Sampling Parameters', 'nsamp')
@@ -112,6 +112,7 @@ def load_params(argc):
     params['nreal'] = parser.getint('Data Sampling Parameters', 'nreal')
     params['niter'] = parser.getint('Data Sampling Parameters', 'niter')
     params['maxres'] = parser.getfloat('Data Sampling Parameters', 'maxres')
+    params['maxdist'] = parser.getfloat('Data Sampling Parameters', 'maxdist')
     params['atol'] = parser.getfloat('Convergence Parameters', 'atol')
     params['btol'] = parser.getfloat('Convergence Parameters', 'btol')
     params['maxiter'] = parser.getint('Convergence Parameters', 'maxiter')
@@ -361,6 +362,7 @@ def _event_location_loop(payload, wdir):
             wdir
         )
         if event is not None:
+            event['event_id'] = event_id
             df_events = df_events.append(event, ignore_index=True)
 
 
@@ -636,13 +638,13 @@ def load_initial_velocity_model(params, phase):
         (
             params['latmin'] + (params['nlat'] - 1) * params['dlat'],
             params['lonmin'],
-            params['depmin'] + (params['nrad'] - 1) * params['drad']
+            params['depmin'] + (params['ndep'] - 1) * params['ddep']
         )
     )
     grid.node_intervals = (
-        params['drad'], np.radians(params['dlat']), np.radians(params['dlon'])
+        params['ddep'], np.radians(params['dlat']), np.radians(params['dlon'])
     )
-    grid.npts = params['nrad'], params['nlat'], params['nlon']
+    grid.npts = params['ndep'], params['nlat'], params['nlon']
     if phase == 'P':
         if params['initial_vmodel_p'] in ('None', ''):
             velocity = 6. * np.ones(grid.npts)
@@ -680,10 +682,22 @@ def load_payload(argc, params):
     :params params: Configuration file parameters.
     """
     # Load event and network data.
+    if RANK == ROOT_RANK:
+        logger.debug("Loading event data.")
     df_events, df_arrivals = load_event_data(argc, params)
+    if RANK == ROOT_RANK:
+        logger.debug("Loading network data.")
     df_stations = load_network_data(argc)
-    df_arrivals = sanitize_arrivals(df_arrivals, df_stations)
-    df_stations = sanitize_stations(df_arrivals, df_stations)
+    if RANK == ROOT_RANK:
+        logger.debug("Sanitizing data.")
+    df_events, df_arrivals, df_stations = sanitize_data(
+        df_events,
+        df_arrivals,
+        df_stations,
+        params
+    )
+    if RANK == ROOT_RANK:
+        logger.debug("Loading initial velocity models.")
     # Load initial velocity model.
     vmodel_p = load_initial_velocity_model(params, 'P')
     vmodel_s = load_initial_velocity_model(params, 'S')
@@ -859,6 +873,86 @@ def _realize_random_trial(payload, params, phase, wdir):
     return (vmodel)
 
 
+def sanitize_data(df_events, df_arrivals, df_stations, params):
+    """
+    Sanitize data to include only observations that will be inverted.
+
+    Remove events outside the bounds of the velocity model.
+    Remove arrivals from events outside the bounds of the velocity model.
+    Remove arrivals with event-to-station distance > maxdist.
+    Remove stations outside the bounds of the velocity model.
+    Remove arrivals at stations with no metadata.
+    Remove stations with no arrivals.
+    """
+    try:
+        return (
+            _sanitize_data(
+                df_events,
+                df_arrivals,
+                df_stations,
+                params
+            )
+        )
+    except Exception as exc:
+        logger.error(exc)
+        sys.exit(-1)
+
+def _sanitize_data(df_events, df_arrivals, df_stations, params):
+    latmin, lonmin, depmin = params['latmin'], params['lonmin'], params['depmin']
+    nlat, nlon, ndep = params['nlat'], params['nlon'], params['ndep']
+    dlat, dlon, ddep = params['dlat'], params['dlon'], params['ddep']
+    latmax = latmin + (nlat-1)*dlat
+    lonmax = lonmin + (nlon-1)*dlon
+    depmax = depmin + (ndep-1)*ddep
+    # Remove events outside the velocity model.
+    df_events = df_events[
+         (df_events['lat'] >= latmin)
+        &(df_events['lat'] <= latmax)
+        &(df_events['lon'] >= lonmin)
+        &(df_events['lon'] <= lonmax)
+        &(df_events['depth'] >= depmin)
+        &(df_events['depth'] <= depmax)
+    ]
+    # Remove stations outside the velocity model.
+    df_stations = df_stations[
+         (df_stations['lat'] >= latmin)
+        &(df_stations['lat'] <= latmax)
+        &(df_stations['lon'] >= lonmin)
+        &(df_stations['lon'] <= lonmax)
+        &(df_stations['depth'] >= depmin)
+        &(df_stations['depth'] <= depmax)
+    ]
+    # Remove arrival at stations without metadata or associated with
+    # unlocated event.
+    df_arrivals = df_arrivals[
+         (df_arrivals['station_id'].isin(df_stations['station_id'].unique()))
+        &(df_arrivals['event_id'].isin(df_events['event_id'].unique()))
+    ]
+    # Remove arrivals with event-to-station distance > maxdist.
+    df_arrivals = df_arrivals.merge(
+        df_events[['lat', 'lon', 'event_id']],
+        on='event_id'
+    ).merge(
+        df_stations[['lat', 'lon', 'station_id']],
+        on='station_id',
+        suffixes=('_origin', '_station')
+    )
+    df_arrivals['dist'] = np.sqrt(
+        np.square(
+            df_arrivals['lat_origin'] - df_arrivals['lat_station']
+        ) \
+        + np.square(
+            df_arrivals['lon_origin'] - df_arrivals['lon_station']
+        )
+    ) * 111.
+    df_arrivals = df_arrivals[df_arrivals['dist'] < params['maxdist']]
+    df_arrivals = df_arrivals[['station_id', 'phase', 'time', 'event_id']]
+    # Remove stations without arrivals.
+    df_stations[
+        df_stations['station_id'].isin(df_arrivals['station_id'].unique())
+    ]
+    return (df_events, df_arrivals, df_stations)
+
 def sample_observed_data(params, payload, phase, homo_sample=False, ncell=500):
     """
     Return a random sample of arrivals from the observed data set.
@@ -923,50 +1017,6 @@ def sample_observed_data(params, payload, phase, homo_sample=False, ncell=500):
     return (df_sample)
 
 
-def sanitize_arrivals(df_arrivals, df_stations):
-    """
-    Remove arrivals at stations without metadata.
-
-    :return: Arrivals at stations with metadata.
-    :rtype: pandas.DataFrame
-    """
-    try:
-        return (_sanitize_arrivals(df_arrivals, df_stations))
-    except Exception as exc:
-        logger.error(exc)
-        sys.exit(-1)
-
-
-def _sanitize_arrivals(df_arrivals, df_stations):
-    return (
-        df_arrivals[
-            df_arrivals['station_id'].isin(df_stations['station_id'].unique())
-        ]
-    )
-
-
-def sanitize_stations(df_arrivals, df_stations):
-    """
-    Remove stations without arrivals.
-
-    :return: Stations with arrivals.
-    :rtype: pandas.DataFrame
-    """
-    try:
-        return (_sanitize_stations(df_arrivals, df_stations))
-    except Exception as exc:
-        logger.error(exc)
-        sys.exit(-1)
-
-
-def _sanitize_stations(df_arrivals, df_stations):
-    return (
-        df_stations[
-            df_stations['station_id'].isin(df_arrivals['station_id'].unique())
-        ]
-    )
-
-
 def trace_ray(event, arrival, solver, vcells):
     """
     Return matrix entries for a single ray.
@@ -979,6 +1029,7 @@ def trace_ray(event, arrival, solver, vcells):
         return (_trace_ray(event, arrival, solver, vcells))
     except pykonal.OutOfBoundsError as exc:
         logger.warning(exc)
+        logger.warning(f"{arrival.name}---{exc}")
         return (None)
     except Exception as exc:
         logger.error(exc)
