@@ -636,27 +636,24 @@ def iterate_inversion(payload, argc, params, iiter):
 
 def _iterate_inversion(payload, argc, params, iiter):
     # Update P-wave velocity model.
-    logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
     if RANK == ROOT_RANK:
-        for key in payload:
-            logger.debug(f"{get_size(payload[key])} --> {key}")
+        logger.info(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
     payload['vmodel_p'] = update_velocity_model(payload, params, 'P')
-    if RANK == ROOT_RANK:
-        for key in payload:
-            logger.debug(f"{get_size(payload[key])} --> {key}")
     # Save P-wave velocity model to disk.
     if RANK == ROOT_RANK:
         write_vmodel_to_disk(payload['vmodel_p'], 'P', params, argc, iiter)
-    ## Update S-wave velocity model.
-    #logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
-    #payload['vmodel_s'] = update_velocity_model(payload, params, 'S')
-    ## Save S-wave velocity model to disk.
-    #if RANK == ROOT_RANK:
-    #    write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
+    # Update S-wave velocity model.
+    if RANK == ROOT_RANK:
+        logger.info(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
+    payload['vmodel_s'] = update_velocity_model(payload, params, 'S')
+    # Save S-wave velocity model to disk.
+    if RANK == ROOT_RANK:
+        write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
 
-    ## Update event locations.
-    #logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
-    #payload['df_events'] = update_event_locations(payload, argc, params, iiter)
+    # Update event locations.
+    if RANK == ROOT_RANK:
+        logger.info(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
+    payload['df_events'] = update_event_locations(payload, argc, params, iiter)
     df_residuals = compute_residuals(payload, argc, params, iiter)
     if RANK == ROOT_RANK:
         write_events_to_disk(payload['df_events'], df_residuals, params, argc, iiter)
