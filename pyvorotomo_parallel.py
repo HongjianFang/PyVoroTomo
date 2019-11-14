@@ -25,8 +25,8 @@ WORLD_SIZE = COMM.Get_size()
 RANK = COMM.Get_rank()
 ROOT_RANK = 0
 
-EVENT_REQUEST_TAG = 100
-EVENT_TRANSMISSION_TAG = 101
+ID_REQUEST_TAG = 100
+ID_TRANSMISSION_TAG = 101
 
 EARTH_RADIUS = 6371.
 DTYPE_REAL = np.float64
@@ -197,6 +197,47 @@ def configure_logging(verbose, logfile):
 
 
 ###############################################################################
+def compute_residuals(payload, argc, params, iiter):
+    """
+    """
+    try:
+        return (_compute_residuals(payload, argc, params, iiter))
+    except Exception as exc:
+        logger.error(exc)
+        sys.exit(-1)
+
+
+def _compute_residuals(payload, argc, params, iiter):
+    try:
+        wdir = COMM.bcast(
+            None if RANK is not ROOT_RANK else tempfile.mkdtemp(dir=argc.working_dir),
+            root=ROOT_RANK
+        )
+        if RANK == ROOT_RANK:
+            logger.info(f'Computing residuals.')
+        station_ids = payload['df_arrivals']['station_id'].unique()[:3]
+        if RANK == ROOT_RANK:
+            id_distribution_loop(station_ids)
+            df_residuals = None
+        else:
+            df_residuals = residual_computation_loop(payload, wdir)
+        df_residuals = COMM.gather(df_residuals, root=ROOT_RANK)
+        if RANK == ROOT_RANK:
+            df_residuals = pd.concat(
+                [df for df in df_residuals if df is not None],
+                ignore_index=True
+            )
+        df_residuals = COMM.bcast(
+            None if RANK is not ROOT_RANK else df_residuals,
+            root=ROOT_RANK
+        )
+    finally:
+        if RANK == ROOT_RANK:
+            logger.debug(f'Removing working directory {wdir}')
+            shutil.rmtree(wdir)
+    return (df_residuals)
+
+
 def compute_traveltime_lookup_table(station, vmodel, wdir, tag=None):
     """
     Create and return the solved EikonalSolver for *station*.
@@ -293,7 +334,7 @@ def cost_function(loc, *args):
     return (np.median(np.abs(residuals)))
 
 
-def event_distribution_loop(event_ids):
+def id_distribution_loop(event_ids):
     """
     Distribute events to worker threads.
 
@@ -302,23 +343,23 @@ def event_distribution_loop(event_ids):
     """
     logger.debug("Beginning event distribution loop.")
     try:
-        return (_event_distribution_loop(event_ids))
+        return (_id_distribution_loop(event_ids))
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
 
 
-def _event_distribution_loop(event_ids):
-    nevent = len(event_ids)
-    ievent = 0
-    for event_id in event_ids:
-        ievent += 1
-        requesting_rank = COMM.recv(source=mpi4py.MPI.ANY_SOURCE, tag=EVENT_REQUEST_TAG)
-        logger.debug(f"Sending event #{ievent} of {nevent} (id #{event_id}) to processor rank {requesting_rank}")
-        COMM.send(event_id, dest=requesting_rank, tag=EVENT_TRANSMISSION_TAG)
+def _id_distribution_loop(ids):
+    nids = len(ids)
+    iid = 0
+    for myid in ids:
+        iid += 1
+        requesting_rank = COMM.recv(source=mpi4py.MPI.ANY_SOURCE, tag=ID_REQUEST_TAG)
+        logger.debug(f"Sending ID #{iid} of {nids} (ID: {myid}) to processor rank {requesting_rank}")
+        COMM.send(myid, dest=requesting_rank, tag=ID_TRANSMISSION_TAG)
     for irank in range(WORLD_SIZE - 1):
-        requesting_rank = COMM.recv(source=mpi4py.MPI.ANY_SOURCE, tag=EVENT_REQUEST_TAG)
-        COMM.send(None, dest=requesting_rank, tag=EVENT_TRANSMISSION_TAG)
+        requesting_rank = COMM.recv(source=mpi4py.MPI.ANY_SOURCE, tag=ID_REQUEST_TAG)
+        COMM.send(None, dest=requesting_rank, tag=ID_TRANSMISSION_TAG)
     return (None)
 
 
@@ -353,8 +394,8 @@ def _event_location_loop(payload, wdir):
     )
     while True:
         # Request an event
-        COMM.send(RANK, dest=ROOT_RANK, tag=EVENT_REQUEST_TAG)
-        event_id = COMM.recv(source=ROOT_RANK, tag=EVENT_TRANSMISSION_TAG)
+        COMM.send(RANK, dest=ROOT_RANK, tag=ID_REQUEST_TAG)
+        event_id = COMM.recv(source=ROOT_RANK, tag=ID_TRANSMISSION_TAG)
         if event_id is None:
             return (df_events)
         logger.debug(f"Locating event id #{event_id}")
@@ -596,23 +637,29 @@ def iterate_inversion(payload, argc, params, iiter):
 def _iterate_inversion(payload, argc, params, iiter):
     # Update P-wave velocity model.
     logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
+    if RANK == ROOT_RANK:
+        for key in payload:
+            logger.debug(f"{get_size(payload[key])} --> {key}")
     payload['vmodel_p'] = update_velocity_model(payload, params, 'P')
+    if RANK == ROOT_RANK:
+        for key in payload:
+            logger.debug(f"{get_size(payload[key])} --> {key}")
     # Save P-wave velocity model to disk.
     if RANK == ROOT_RANK:
         write_vmodel_to_disk(payload['vmodel_p'], 'P', params, argc, iiter)
+    ## Update S-wave velocity model.
+    #logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
+    #payload['vmodel_s'] = update_velocity_model(payload, params, 'S')
+    ## Save S-wave velocity model to disk.
+    #if RANK == ROOT_RANK:
+    #    write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
 
-    # Update S-wave velocity model.
-    logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
-    payload['vmodel_s'] = update_velocity_model(payload, params, 'S')
-    # Save S-wave velocity model to disk.
+    ## Update event locations.
+    #logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
+    #payload['df_events'] = update_event_locations(payload, argc, params, iiter)
+    df_residuals = compute_residuals(payload, argc, params, iiter)
     if RANK == ROOT_RANK:
-        write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
-
-    # Update event locations.
-    logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
-    payload['df_events'] = update_event_locations(payload, argc, params, iiter)
-    if RANK == ROOT_RANK:
-        write_events_to_disk(payload['df_events'], params, argc, iiter)
+        write_events_to_disk(payload['df_events'], df_residuals, params, argc, iiter)
 
     return (payload)
 
@@ -882,6 +929,68 @@ def _realize_random_trial(payload, params, phase, wdir):
     return (vmodel)
 
 
+def residual_computation_loop(payload, wdir):
+    """
+    """
+    logger.debug("Beginning residual computation loop.")
+    try:
+        return (_residual_computation_loop(payload, wdir))
+    except Exception as exc:
+        logger.error(exc)
+        sys.exit(-1)
+
+
+def _residual_computation_loop(payload, wdir):
+    df_arrivals = payload['df_arrivals']
+    df_arrivals = df_arrivals.sort_values(
+        ['station_id', 'phase']
+    ).set_index(
+        ['station_id', 'phase']
+    )
+    df_events = payload['df_events'].sort_values(
+        'event_id'
+    ).set_index(
+        'event_id'
+    )
+    df_stations = payload['df_stations'].sort_values(
+        'station_id'
+    ).set_index(
+        'station_id'
+    )
+    df_residuals = pd.DataFrame()
+    while True:
+        # Request a station.
+        COMM.send(RANK, dest=ROOT_RANK, tag=ID_REQUEST_TAG)
+        station_id = COMM.recv(source=ROOT_RANK, tag=ID_TRANSMISSION_TAG)
+        logger.debug(f"Received station {station_id}")
+        if station_id is None:
+            return (df_residuals)
+        for phase in ('P', 'S'):
+            vmodel = payload['vmodel_p'] if phase is 'P' else payload['vmodel_s']
+            station = df_stations.loc[station_id]
+            station['station_id'] = station.name
+            compute_traveltime_lookup_table(station, vmodel, wdir, tag=phase)
+            fname = os.path.join(wdir, f'{station_id}.{phase}.npz')
+            solver = load_solver_from_disk(fname)
+            tti = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
+            for idx, arrival in df_arrivals.loc[(station_id, phase)].iterrows():
+                event_id = arrival['event_id']
+                event = df_events.loc[event_id]
+                rho, theta, phi = geo2sph(event[['lat', 'lon', 'depth']])
+                try:
+                    residual = arrival['time'] - event['time'] - tti((rho, theta, phi))
+                except:
+                    residual = None
+                if residual is not None:
+                    df_residuals = df_residuals.append(
+                            pd.DataFrame(
+                                [[station_id, event_id, phase, residual]],
+                                columns=['station_id', 'event_id', 'phase', 'residual']
+                            ),
+                        ignore_index=True
+                    )
+
+
 def sanitize_data(df_events, df_arrivals, df_stations, params):
     """
     Sanitize data to include only observations that will be inverted.
@@ -1093,7 +1202,7 @@ def _update_event_locations(payload, argc, params, iiter):
         COMM.barrier()
         event_ids = payload['df_arrivals']['event_id'].unique()
         if RANK == ROOT_RANK:
-            event_distribution_loop(event_ids)
+            id_distribution_loop(event_ids)
             df_events = None
         else:
             df_events = event_location_loop(payload, wdir)
@@ -1168,7 +1277,7 @@ def _update_velocity_model(payload, params, phase):
     return (vmodel)
 
 
-def write_events_to_disk(df_events, params, argc, iiter):
+def write_events_to_disk(df_events, df_residuals, params, argc, iiter):
     """
     Write event locations to disk.
 
@@ -1178,13 +1287,13 @@ def write_events_to_disk(df_events, params, argc, iiter):
     :return:
     """
     try:
-        return (_write_events_to_disk(df_events, params, argc, iiter))
+        return (_write_events_to_disk(df_events, df_residuals, params, argc, iiter))
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
 
 
-def _write_events_to_disk(df_events, params, argc, iiter):
+def _write_events_to_disk(df_events, df_residuals, params, argc, iiter):
     nreal = params['nreal']
     nsamp = params['nsamp']
     ncell = params['ncell']
@@ -1198,6 +1307,7 @@ def _write_events_to_disk(df_events, params, argc, iiter):
     # Save the updated event locations to disk.
     with pd.HDFStore(fname) as store:
         store['events'] = df_events
+        store['residuals'] = df_residuals
 
 
 def write_vmodel_to_disk(vmodel, phase, params, argc, iiter):
@@ -1248,6 +1358,28 @@ def _write_vmodel_to_disk(vmodel, phase, params, argc, iiter):
         )
 
 
+###############################################################################
+# DEBUG
+
+def get_size(obj, seen=None):
+    """Recursively finds size of objects"""
+    size = sys.getsizeof(obj)
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    # Important mark as seen *before* entering recursion to gracefully handle
+    # self-referential objects
+    seen.add(obj_id)
+    if isinstance(obj, dict):
+        size += sum([get_size(v, seen) for v in obj.values()])
+        size += sum([get_size(k, seen) for k in obj.keys()])
+    elif hasattr(obj, '__dict__'):
+        size += get_size(obj.__dict__, seen)
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        size += sum([get_size(i, seen) for i in obj])
+    return size
 ###############################################################################
 
 
