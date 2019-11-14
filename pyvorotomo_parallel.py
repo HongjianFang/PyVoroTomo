@@ -1,6 +1,7 @@
 import argparse
 import configparser
 import logging
+import memory_profiler as mprof
 import mpi4py.MPI
 import numpy as np
 import os
@@ -593,18 +594,21 @@ def iterate_inversion(payload, argc, params, iiter):
 
 def _iterate_inversion(payload, argc, params, iiter):
     # Update P-wave velocity model.
+    logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
     payload['vmodel_p'] = update_velocity_model(payload, params, 'P')
     # Save P-wave velocity model to disk.
     if RANK == ROOT_RANK:
         write_vmodel_to_disk(payload['vmodel_p'], 'P', params, argc, iiter)
 
     # Update S-wave velocity model.
+    logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
     payload['vmodel_s'] = update_velocity_model(payload, params, 'S')
     # Save S-wave velocity model to disk.
     if RANK == ROOT_RANK:
         write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
 
     # Update event locations.
+    logger.debug(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
     payload['df_events'] = update_event_locations(payload, argc, params, iiter)
     if RANK == ROOT_RANK:
         write_events_to_disk(payload['df_events'], params, argc, iiter)
