@@ -38,9 +38,10 @@ class VelocityModel(object):
     A simple container class.
     """
 
-    def __init__(self, grid, velocity):
+    def __init__(self, grid, velocity, samples=None):
         self.grid = grid
         self.velocity = velocity
+        self.samples = samples
 
 
 def parse_args():
@@ -746,7 +747,11 @@ def load_velocity_from_file(fname):
         grid.min_coords = infile['min_coords']
         grid.node_intervals = infile['node_intervals']
         grid.npts = infile['npts']
-        vmodel = VelocityModel(grid=grid, velocity=infile['vv'])
+        vmodel = VelocityModel(
+            grid=grid,
+            velocity=infile['vv'],
+            samples=None if 'samples' not in infile else infile['samples']
+        )
     return (vmodel)
 
 
@@ -1150,9 +1155,12 @@ def _update_velocity_model(payload, params, phase):
             vmodels.append(realize_random_trial(payload, params, phase, wdir))
         COMM.barrier()
         # Update velocity model
-        velocity = np.stack([vmodel.velocity for vmodel in vmodels])
-        velocity = np.mean(velocity, axis=0)
-        vmodel = VelocityModel(vmodel.grid, velocity)
+        velocity_samples = np.stack([vmodel.velocity for vmodel in vmodels])
+        vmodel = VelocityModel(
+            vmodel.grid,
+            np.mean(velocity_samples, axis=0),
+            samples=velocity_samples
+        )
     finally:
         if RANK == ROOT_RANK:
             logger.debug(f'Removing working directory {wdir}')
@@ -1220,14 +1228,24 @@ def _write_vmodel_to_disk(vmodel, phase, params, argc, iiter):
     logger.info(f"Saving velocity model to disk: {fname}")
     if not os.path.isdir(argc.output_dir):
         os.makedirs(argc.output_dir)
-    # Save the update velocity model to disk.
-    np.savez_compressed(
-        fname,
-        min_coords=vmodel.grid.min_coords,
-        node_intervals=vmodel.grid.node_intervals,
-        npts=vmodel.grid.npts,
-        vv=vmodel.velocity
-    )
+    if vmodel.samples is None:
+        # Save the update velocity model to disk.
+        np.savez_compressed(
+            fname,
+            min_coords=vmodel.grid.min_coords,
+            node_intervals=vmodel.grid.node_intervals,
+            npts=vmodel.grid.npts,
+            vv=vmodel.velocity
+        )
+    else:
+        np.savez_compressed(
+            fname,
+            min_coords=vmodel.grid.min_coords,
+            node_intervals=vmodel.grid.node_intervals,
+            npts=vmodel.grid.npts,
+            vv=vmodel.velocity,
+            samples=vmodel.samples
+        )
 
 
 ###############################################################################
