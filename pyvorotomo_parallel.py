@@ -331,7 +331,19 @@ def cost_function(loc, *args):
         ])
     except pykonal.OutOfBoundsError:
         return (np.inf)
-    return (np.median(np.abs(residuals)))
+    while True:
+        std = np.std(residuals)
+        mean = np.mean(residuals)
+        nres = len(residuals)
+        residuals = residuals[
+             (residuals > mean - 2*std)
+            &(residuals < mean + 2*std)
+        ]
+        if len(residuals) == nres:
+            break
+    if len(residuals) < 4: # TODO:: This should be a configuration-file parameter.
+        return (np.inf)
+    return (np.sqrt(np.mean(np.square(residuals))))
 
 
 def id_distribution_loop(event_ids):
