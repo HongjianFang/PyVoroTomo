@@ -434,9 +434,12 @@ def find_ray_idx(ray, vcells):
 
 
 def _find_ray_idx(ray, vcells):
-    dist = scipy.spatial.distance.cdist(sph2xyz(ray), sph2xyz(vcells))
-    argmin = np.argmin(dist, axis=1)
-    idxs, counts = np.unique(argmin, return_counts=True)
+    cell_ids = scipy.spatial.cKDTree(
+        sph2xyz(vcells)
+    ).query(
+        sph2xyz(ray)
+    )[1]
+    idxs, counts = np.unique(cell_ids, return_counts=True)
     return (idxs, counts)
 
 
@@ -533,11 +536,11 @@ def generate_projection_matrix(grid, ncell=300):
 
 def _generate_projection_matrix(grid, ncell=300):
     vcells = generate_voronoi_cells(grid, ncell)
-    dist = scipy.spatial.distance.cdist(
-        sph2xyz(grid.nodes.reshape(-1, 3)),
+    colid = scipy.spatial.cKDTree(
         sph2xyz(vcells)
-    )
-    colid = np.argmin(dist, axis=1)
+    ).query(
+        sph2xyz(grid.nodes.reshape(-1, 3))
+    )[1]
     rowid = np.arange(np.prod(grid.nodes.shape[:-1]))
 
     G_proj = scipy.sparse.coo_matrix(
@@ -1117,17 +1120,15 @@ def sample_observed_data(params, payload, phase, homo_sample=False, ncell=500):
     df_arrivals['station_x'] = station_xyz[:, 0]
     df_arrivals['station_y'] = station_xyz[:, 1]
     df_arrivals['station_z'] = station_xyz[:, 2]
-    vcells = sph2xyz(generate_voronoi_cells(grid, ncell=ncell))
-    dist = scipy.spatial.distance.cdist(
-        df_arrivals[['origin_x', 'origin_y', 'origin_z']],
-        vcells
+    vcells = scipy.spatial.cKDTree(
+        sph2xyz(generate_voronoi_cells(grid, ncell=ncell))
     )
-    df_arrivals['origin_cell_id'] = np.argmin(dist, axis=1)
-    dist = scipy.spatial.distance.cdist(
-        df_arrivals[['station_x', 'station_y', 'station_z']],
-        vcells
-    )
-    df_arrivals['station_cell_id'] = np.argmin(dist, axis=1)
+    df_arrivals['origin_cell_id'] = vcells.query(
+        df_arrivals[['origin_x', 'origin_y', 'origin_z']].values
+    )[1]
+    df_arrivals['station_cell_id'] = vcells.query(
+        df_arrivals[['station_x', 'station_y', 'station_z']].values
+    )[1]
     df_arrivals['path_id'] = list(zip(df_arrivals['origin_cell_id'], df_arrivals['station_cell_id']))
     value_counts = df_arrivals['path_id'].value_counts()
     df_arrivals['weight'] = (1 / value_counts.loc[df_arrivals['path_id']]).values
