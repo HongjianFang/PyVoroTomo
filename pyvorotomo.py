@@ -62,11 +62,10 @@ def parse_args():
         help='Output directory'
     )
     parser.add_argument(
-        '-w',
-        '--working_dir',
-        default=os.path.abspath('.'),
-        type=str,
-        help='Output directory'
+        '-a',
+        '--save_arrivals',
+        action="store_true",
+        help='Save arrivals when saving updated event locations.'
     )
     parser.add_argument(
         '-c',
@@ -82,10 +81,23 @@ def parse_args():
         help="log file"
     )
     parser.add_argument(
+        '-m',
+        '--log_memory',
+        type=str,
+        help='Log memory consumption.'
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="verbose"
+    )
+    parser.add_argument(
+        '-w',
+        '--working_dir',
+        default=os.path.abspath('.'),
+        type=str,
+        help='Output directory'
     )
     return (parser.parse_args())
 
@@ -233,7 +245,7 @@ def _compute_residuals(payload, argc, params, iiter):
         )
     finally:
         if RANK == ROOT_RANK:
-            logger.debug(f'Removing working directory {wdir}')
+            logger.info(f'Removing working directory {wdir}')
             shutil.rmtree(wdir)
     return (df_residuals)
 
@@ -287,7 +299,7 @@ def compute_traveltime_lookup_tables(payload, phase, wdir):
     :type wdir: str
     """
     if RANK == ROOT_RANK:
-        logger.debug(f'Computing {phase}-wave traveltime-lookup tables.')
+        logger.info(f'Computing {phase}-wave traveltime-lookup tables.')
     try:
         return (_compute_traveltime_lookup_tables(payload, phase, wdir))
     except Exception as exc:
@@ -353,7 +365,6 @@ def id_distribution_loop(event_ids):
     :param event_ids: Event ids.
     :return: None
     """
-    logger.debug("Beginning event distribution loop.")
     try:
         return (_id_distribution_loop(event_ids))
     except Exception as exc:
@@ -384,7 +395,6 @@ def event_location_loop(payload, wdir):
     :param params:
     :return:
     """
-    logger.debug("Beginning event location loop.")
     try:
         return (_event_location_loop(payload, wdir))
     except Exception as exc:
@@ -619,6 +629,7 @@ def main(argc, params):
     :param argc: Command line arguments.
     :param params: Configuration file parameters.
     """
+    logger.debug(f"Starting rank {RANK}.")
     # Load payload in root thread.
     if RANK == ROOT_RANK:
         payload = load_payload(argc, params)
@@ -629,7 +640,30 @@ def main(argc, params):
     )
     # Iterate the inversion process.
     for iiter in range(params['niter']):
-        payload = iterate_inversion(payload, argc, params, iiter)
+        if RANK == ROOT_RANK:
+            logger.info(f"Starting iteration #{iiter}")
+        if argc.log_memory is None:
+            payload = iterate_inversion(payload, argc, params, iiter)
+        else:
+            if not os.path.isdir(argc.log_memory):
+                os.makedirs(argc.log_memory)
+            mem_usage, payload = mprof.memory_usage(
+                (
+                    iterate_inversion,
+                    (payload, argc, params, iiter),
+                    {}
+                ),
+                retval=True,
+                timestamps=True,
+                interval=2,
+                max_iterations=1
+            )
+            with open(
+                os.path.join(argc.log_memory, f"memory_{RANK}.log"),
+                "a+",
+            ) as logfile:
+                for mem, time in mem_usage:
+                    logfile.write(f"{time}\t{mem}\n")
 
 
 def iterate_inversion(payload, argc, params, iiter):
@@ -651,27 +685,22 @@ def iterate_inversion(payload, argc, params, iiter):
 
 def _iterate_inversion(payload, argc, params, iiter):
     # Update P-wave velocity model.
-    if RANK == ROOT_RANK:
-        logger.info(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
     payload['vmodel_p'] = update_velocity_model(payload, params, 'P')
     # Save P-wave velocity model to disk.
     if RANK == ROOT_RANK:
         write_vmodel_to_disk(payload['vmodel_p'], 'P', params, argc, iiter)
+
     # Update S-wave velocity model.
-    if RANK == ROOT_RANK:
-        logger.info(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
     payload['vmodel_s'] = update_velocity_model(payload, params, 'S')
     # Save S-wave velocity model to disk.
     if RANK == ROOT_RANK:
         write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
 
     # Update event locations.
-    if RANK == ROOT_RANK:
-        logger.info(f"Currently using {int(mprof.memory_usage(-1)[0])}MB of memory.")
     payload['df_events'] = update_event_locations(payload, argc, params, iiter)
     df_residuals = compute_residuals(payload, argc, params, iiter)
     if RANK == ROOT_RANK:
-        write_events_to_disk(payload['df_events'], df_residuals, params, argc, iiter)
+        write_events_to_disk(payload, df_residuals, params, argc, iiter)
 
     return (payload)
 
@@ -747,13 +776,13 @@ def load_payload(argc, params):
     """
     # Load event and network data.
     if RANK == ROOT_RANK:
-        logger.debug("Loading event data.")
+        logger.info("Loading event data.")
     df_events, df_arrivals = load_event_data(argc, params)
     if RANK == ROOT_RANK:
-        logger.debug("Loading network data.")
+        logger.info("Loading network data.")
     df_stations = load_network_data(argc)
     if RANK == ROOT_RANK:
-        logger.debug("Sanitizing data.")
+        logger.info("Sanitizing data.")
     df_events, df_arrivals, df_stations = sanitize_data(
         df_events,
         df_arrivals,
@@ -761,7 +790,7 @@ def load_payload(argc, params):
         params
     )
     if RANK == ROOT_RANK:
-        logger.debug("Loading initial velocity models.")
+        logger.info("Loading initial velocity models.")
     # Load initial velocity model.
     vmodel_p = load_initial_velocity_model(params, 'P')
     vmodel_s = load_initial_velocity_model(params, 'S')
@@ -944,7 +973,6 @@ def _realize_random_trial(payload, params, phase, wdir):
 def residual_computation_loop(payload, wdir):
     """
     """
-    logger.debug("Beginning residual computation loop.")
     try:
         return (_residual_computation_loop(payload, wdir))
     except Exception as exc:
@@ -974,7 +1002,7 @@ def _residual_computation_loop(payload, wdir):
         # Request a station.
         COMM.send(RANK, dest=ROOT_RANK, tag=ID_REQUEST_TAG)
         station_id = COMM.recv(source=ROOT_RANK, tag=ID_TRANSMISSION_TAG)
-        logger.debug(f"Received station {station_id}")
+        logger.debug(f"Computing residuals for station {station_id}")
         if station_id is None:
             return (df_residuals)
         for phase in ('P', 'S'):
@@ -1216,21 +1244,20 @@ def _update_event_locations(payload, argc, params, iiter):
             df_events = None
         else:
             df_events = event_location_loop(payload, wdir)
-            logger.debug(f"Located {len(df_events)} events.")
         df_events = COMM.gather(df_events, root=ROOT_RANK)
         if RANK == ROOT_RANK:
             df_events = pd.concat(
                 [df for df in df_events if df is not None],
                 ignore_index=True
             )
-            logger.debug(f"{len(df_events)} total events located.")
+            logger.info(f"{len(df_events)} total events located.")
         df_events = COMM.bcast(
             None if RANK is not ROOT_RANK else df_events,
             root=ROOT_RANK
         )
     finally:
         if RANK == ROOT_RANK:
-            logger.debug(f'Removing working directory {wdir}')
+            logger.info(f'Removing working directory {wdir}')
             shutil.rmtree(wdir)
     return (df_events)
 
@@ -1261,7 +1288,7 @@ def _update_velocity_model(payload, params, phase):
             root=ROOT_RANK
         )
         if RANK == ROOT_RANK:
-            logger.debug(f'Updating {phase}-wave velocity model')
+            logger.info(f'Updating {phase}-wave velocity model')
         # Compute traveltime-lookup tables
         if RANK == ROOT_RANK:
             logger.info(f"Computing {phase}-wave traveltime-lookup tables.")
@@ -1282,28 +1309,28 @@ def _update_velocity_model(payload, params, phase):
         )
     finally:
         if RANK == ROOT_RANK:
-            logger.debug(f'Removing working directory {wdir}')
+            logger.info(f'Removing working directory {wdir}')
             shutil.rmtree(wdir)
     return (vmodel)
 
 
-def write_events_to_disk(df_events, df_residuals, params, argc, iiter):
+def write_events_to_disk(payload, df_residuals, params, argc, iiter):
     """
     Write event locations to disk.
 
-    :param df_events:
+    :param payload:
     :param params:
     :param argc:
     :return:
     """
     try:
-        return (_write_events_to_disk(df_events, df_residuals, params, argc, iiter))
+        return (_write_events_to_disk(payload, df_residuals, params, argc, iiter))
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
 
 
-def _write_events_to_disk(df_events, df_residuals, params, argc, iiter):
+def _write_events_to_disk(payload, df_residuals, params, argc, iiter):
     nreal = params['nreal']
     nsamp = params['nsamp']
     ncell = params['ncell']
@@ -1316,8 +1343,10 @@ def _write_events_to_disk(df_events, df_residuals, params, argc, iiter):
         os.makedirs(argc.output_dir)
     # Save the updated event locations to disk.
     with pd.HDFStore(fname) as store:
-        store['events'] = df_events
-        store['residuals'] = df_residuals
+        store['events'] = payload['df_events']
+        if argc.save_arrivals is True:
+            store['arrivals'] = payload['df_arrivals']
+        #store['residuals'] = df_residuals
 
 
 def write_vmodel_to_disk(vmodel, phase, params, argc, iiter):
