@@ -227,7 +227,7 @@ def _compute_residuals(payload, argc, params, iiter):
         )
         if RANK == ROOT_RANK:
             logger.info(f'Computing residuals.')
-        station_ids = payload['df_arrivals']['station_id'].unique()[:3]
+        station_ids = payload['df_arrivals']['station_id'].unique()
         if RANK == ROOT_RANK:
             id_distribution_loop(station_ids)
             df_residuals = None
@@ -1346,7 +1346,7 @@ def _write_events_to_disk(payload, df_residuals, params, argc, iiter):
         store['events'] = payload['df_events']
         if argc.save_arrivals is True:
             store['arrivals'] = payload['df_arrivals']
-        #store['residuals'] = df_residuals
+        store['residuals'] = df_residuals
 
 
 def write_vmodel_to_disk(vmodel, phase, params, argc, iiter):
