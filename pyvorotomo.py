@@ -127,6 +127,8 @@ def load_params(argc):
     params['niter'] = parser.getint('Data Sampling Parameters', 'niter')
     params['maxres'] = parser.getfloat('Data Sampling Parameters', 'maxres')
     params['maxdist'] = parser.getfloat('Data Sampling Parameters', 'maxdist')
+    params['min_narr'] = parser.getint('Data Sampling Parameters', 'min_narr')
+    params['outlier_removal_factor'] = parser.getfloat('Data Sampling Parameters', 'outlier_removal_factor')
     params['atol'] = parser.getfloat('Convergence Parameters', 'atol')
     params['btol'] = parser.getfloat('Convergence Parameters', 'btol')
     params['maxiter'] = parser.getint('Convergence Parameters', 'maxiter')
@@ -333,7 +335,7 @@ def cost_function(loc, *args):
     :rtype:
     """
     lat, lon, depth, time = loc
-    df_arrivals, tti = args
+    df_arrivals, tti, params = args
     try:
         residuals = np.array([
             tti[arrival['station_id']][arrival['phase']](geo2sph((lat, lon, depth)))
@@ -343,17 +345,11 @@ def cost_function(loc, *args):
         ])
     except pykonal.OutOfBoundsError:
         return (np.inf)
-    while True:
-        std = np.std(residuals)
-        mean = np.mean(residuals)
-        nres = len(residuals)
-        residuals = residuals[
-             (residuals > mean - 2*std)
-            &(residuals < mean + 2*std)
-        ]
-        if len(residuals) == nres:
-            break
-    if len(residuals) < 4: # TODO:: This should be a configuration-file parameter.
+    k = params["outlier_removal_factor"]
+    q1, q3 = np.quantile(residuals, [0.25, 0.75])
+    iqr = q3 - q1
+    residuals = residuals[(residuals >= q1 - k*iqr) &(residuals <= q3 + k*iqr)]
+    if len(residuals) < params["min_narr"]:
         return (np.inf)
     return (np.sqrt(np.mean(np.square(residuals))))
 
@@ -386,7 +382,7 @@ def _id_distribution_loop(ids):
     return (None)
 
 
-def event_location_loop(payload, wdir):
+def event_location_loop(payload, params, wdir):
     """
     Receive and locate events.
 
@@ -396,13 +392,13 @@ def event_location_loop(payload, wdir):
     :return:
     """
     try:
-        return (_event_location_loop(payload, wdir))
+        return (_event_location_loop(payload, params, wdir))
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
 
 
-def _event_location_loop(payload, wdir):
+def _event_location_loop(payload, params, wdir):
     df_arrivals = payload['df_arrivals']
     df_arrivals = df_arrivals.sort_values('event_id').set_index('event_id')
     df_events = pd.DataFrame()
@@ -424,6 +420,7 @@ def _event_location_loop(payload, wdir):
         event = locate_event(
             df_arrivals.loc[event_id],
             bounds,
+            params,
             wdir
         )
         if event is not None:
@@ -843,7 +840,7 @@ def load_velocity_from_file(fname):
     return (vmodel)
 
 
-def locate_event(df_arrivals, bounds, wdir):
+def locate_event(df_arrivals, bounds, params, wdir):
     """
     Locate event.
 
@@ -853,15 +850,15 @@ def locate_event(df_arrivals, bounds, wdir):
     :return:
     """
     try:
-        return (_locate_event(df_arrivals, bounds, wdir))
+        return (_locate_event(df_arrivals, bounds, params, wdir))
     except Exception as exc:
         logger.error(exc)
         sys.exit(-1)
 
 
-def _locate_event(df_arrivals, bounds, wdir):
+def _locate_event(df_arrivals, bounds, params, wdir):
     tti = dict()
-    if len(df_arrivals) < 4:  # TODO:: This should be a configuration-file parameter.
+    if len(df_arrivals) < params["min_narr"]:
         return (None)
     for arrival_idx, arrival in df_arrivals.iterrows():
         station_id, phase = arrival[['station_id', 'phase']]
@@ -873,7 +870,7 @@ def _locate_event(df_arrivals, bounds, wdir):
     soln = scipy.optimize.differential_evolution(
         cost_function,
         bounds,
-        args=(df_arrivals, tti),
+        args=(df_arrivals, tti, params),
         polish=True
     )
     return (
