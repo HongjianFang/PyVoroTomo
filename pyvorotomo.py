@@ -1065,6 +1065,8 @@ def _sanitize_data(df_events, df_arrivals, df_stations, params):
     latmax = latmin + (nlat-1)*dlat
     lonmax = lonmin + (nlon-1)*dlon
     depmax = depmin + (ndep-1)*ddep
+    # Remove duplicate event IDs
+    df_events = df_events.drop_duplicates("event_id")
     # Remove events outside the velocity model.
     df_events = df_events[
          (df_events['lat'] >= latmin)
@@ -1246,7 +1248,7 @@ def _update_event_locations(payload, argc, params, iiter):
             id_distribution_loop(event_ids)
             df_events = None
         else:
-            df_events = event_location_loop(payload, wdir)
+            df_events = event_location_loop(payload, params, wdir)
         df_events = COMM.gather(df_events, root=ROOT_RANK)
         if RANK == ROOT_RANK:
             df_events = pd.concat(
