@@ -133,13 +133,17 @@ def load_params(argc):
     params['niter'] = parser.getint('Data Sampling Parameters', 'niter')
     params['maxres'] = parser.getfloat('Data Sampling Parameters', 'maxres')
     params['maxdist'] = parser.getfloat('Data Sampling Parameters', 'maxdist')
-    params['min_narr'] = parser.getint('Data Sampling Parameters', 'min_narr')
-    params['outlier_removal_factor'] = parser.getfloat('Data Sampling Parameters', 'outlier_removal_factor')
     params['atol'] = parser.getfloat('Convergence Parameters', 'atol')
     params['btol'] = parser.getfloat('Convergence Parameters', 'btol')
     params['maxiter'] = parser.getint('Convergence Parameters', 'maxiter')
     params['conlim'] = parser.getint('Convergence Parameters', 'conlim')
     params['damp'] = parser.getfloat('Convergence Parameters', 'damp')
+    params['min_narr'] = parser.getint('Event Relocation Parameters', 'min_narr')
+    params['outlier_removal_factor'] = parser.getfloat('Event Relocation Parameters', 'outlier_removal_factor')
+    params['max_dlat'] = parser.getfloat('Event Relocation Parameters', 'max_dlat')
+    params['max_dlon'] = parser.getfloat('Event Relocation Parameters', 'max_dlon')
+    params['max_ddepth'] = parser.getfloat('Event Relocation Parameters', 'max_ddepth')
+    params['max_dtime'] = parser.getfloat('Event Relocation Parameters', 'max_dtime')
     return (params)
 
 
@@ -406,23 +410,28 @@ def event_location_loop(payload, params, wdir):
 
 def _event_location_loop(payload, params, wdir):
     df_arrivals = payload['df_arrivals']
+    df_events_old = payload["df_events"]
     df_arrivals = df_arrivals.sort_values('event_id').set_index('event_id')
-    df_events = pd.DataFrame()
+    df_events_old = df_events_old.sort_values('event_id').set_index('event_id')
+    df_events_new = pd.DataFrame()
     latmax, lonmin, dmax = sph2geo(payload['vmodel_p'].grid.min_coords)
     latmin, lonmax, dmin = sph2geo(payload['vmodel_p'].grid.max_coords)
-    bounds = (
-        (latmin, latmax),
-        (lonmin, lonmax),
-        (dmin, dmax),
-        (0, (pd.to_datetime('now') - pd.to_datetime(0)).total_seconds())
-    )
     while True:
         # Request an event
         COMM.send(RANK, dest=ROOT_RANK, tag=ID_REQUEST_TAG)
         event_id = COMM.recv(source=ROOT_RANK, tag=ID_TRANSMISSION_TAG)
         if event_id is None:
-            return (df_events)
+            return (df_events_new)
         logger.debug(f"Locating event id #{event_id}")
+        lat0, lon0, depth0, time0 = df_events_old.loc[
+            event_id, ["lat", "lon", "depth", "time"]
+        ]
+        bounds = (
+            (lat0-params["max_dlat"], lat0+params["max_dlat"]),
+            (lon0-params["max_dlon"], lon0+params["max_dlon"]),
+            (depth0-params["max_ddepth"], depth0+params["max_ddepth"]),
+            (time0-params["max_dtime"], time0+params["max_dtime"])
+        )
         event = locate_event(
             df_arrivals.loc[event_id],
             bounds,
@@ -431,7 +440,7 @@ def _event_location_loop(payload, params, wdir):
         )
         if event is not None:
             event['event_id'] = event_id
-            df_events = df_events.append(event, ignore_index=True)
+            df_events_new = df_events_new.append(event, ignore_index=True)
 
 
 def find_ray_idx(ray, vcells):
