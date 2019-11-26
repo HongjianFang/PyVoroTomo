@@ -642,7 +642,7 @@ def main(argc, params):
         if argc.log_memory is None:
             payload = iterate_inversion(payload, argc, params, iiter)
         else:
-            if not os.path.isdir(argc.log_memory):
+            if RANK == ROOT_RANK and argc.log_memory is not None and not os.path.isdir(argc.log_memory):
                 os.makedirs(argc.log_memory)
             mem_usage, payload = mprof.memory_usage(
                 (
