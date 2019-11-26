@@ -642,7 +642,11 @@ def main(argc, params):
         if argc.log_memory is None:
             payload = iterate_inversion(payload, argc, params, iiter)
         else:
-            if RANK == ROOT_RANK and argc.log_memory is not None and not os.path.isdir(argc.log_memory):
+            if (
+                RANK == ROOT_RANK
+                and argc.log_memory is not None
+                and not os.path.isdir(argc.log_memory)
+            ):
                 os.makedirs(argc.log_memory)
             mem_usage, payload = mprof.memory_usage(
                 (
@@ -1010,6 +1014,8 @@ def _residual_computation_loop(payload, wdir):
             fname = os.path.join(wdir, f'{station_id}.{phase}.npz')
             solver = load_solver_from_disk(fname)
             tti = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
+            if phase not in df_arrivals.loc[station_id].index.unique():
+                continue
             for idx, arrival in df_arrivals.loc[(station_id, phase)].iterrows():
                 event_id = arrival['event_id']
                 event = df_events.loc[event_id]
