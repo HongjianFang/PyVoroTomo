@@ -87,6 +87,12 @@ def parse_args():
         help='Log memory consumption.'
     )
     parser.add_argument(
+        "-r",
+        "--relocate_events",
+        action="store_true",
+        help="Relocate events."
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -685,6 +691,14 @@ def iterate_inversion(payload, argc, params, iiter):
 
 
 def _iterate_inversion(payload, argc, params, iiter):
+    # Update event locations.
+    if iiter == 0:
+        if argc.relocate_events is True:
+            payload['df_events'] = update_event_locations(payload, argc, params, iiter-1)
+        df_residuals = compute_residuals(payload, argc, params, iiter-1)
+        if RANK == ROOT_RANK:
+            write_events_to_disk(payload, df_residuals, params, argc, iiter-1)
+
     # Update P-wave velocity model.
     payload['vmodel_p'] = update_velocity_model(payload, params, 'P')
     # Save P-wave velocity model to disk.
@@ -698,7 +712,8 @@ def _iterate_inversion(payload, argc, params, iiter):
         write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
 
     # Update event locations.
-    payload['df_events'] = update_event_locations(payload, argc, params, iiter)
+    if argc.relocate_events is True:
+        payload['df_events'] = update_event_locations(payload, argc, params, iiter)
     df_residuals = compute_residuals(payload, argc, params, iiter)
     if RANK == ROOT_RANK:
         write_events_to_disk(payload, df_residuals, params, argc, iiter)
