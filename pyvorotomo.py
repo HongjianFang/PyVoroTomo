@@ -239,12 +239,50 @@ def _compute_residuals(payload, argc, params, iiter):
         )
         if RANK == ROOT_RANK:
             logger.info(f'Computing residuals.')
-        station_ids = payload['df_arrivals']['station_id'].unique()
-        if RANK == ROOT_RANK:
-            id_distribution_loop(station_ids)
-            df_residuals = None
-        else:
-            df_residuals = residual_computation_loop(payload, wdir)
+        compute_traveltime_lookup_tables(payload, 'P', wdir)
+        compute_traveltime_lookup_tables(payload, 'S', wdir)
+        df_arrivals = COMM.scatter(
+            None if RANK is not ROOT_RANK else np.array_split(
+                payload['df_arrivals'].sort_values(["station_id", "phase"]).iloc[:1000],
+                WORLD_SIZE
+            ),
+            root=ROOT_RANK
+        )
+        logger.debug(
+            f"Computing residuals for {len(df_arrivals)} arrivals at "
+            f"{len(df_arrivals['station_id'].unique())} stations."
+        )
+        df_events = payload['df_events'].sort_values(
+            'event_id'
+        ).set_index(
+            'event_id'
+        )
+        df_residuals = pd.DataFrame()
+        last_fname = None
+        for idx, arrival in df_arrivals.iterrows():
+            station_id = arrival["station_id"]
+            event_id = arrival["event_id"]
+            phase = arrival["phase"]
+            fname = os.path.join(wdir, f'{station_id}.{phase}.npz')
+            if fname != last_fname:
+                logger.debug(f"Loading {fname}")
+                solver = load_solver_from_disk(fname)
+                tti = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
+            last_fname = fname
+            event = df_events.loc[event_id]
+            rho, theta, phi = geo2sph(event[['lat', 'lon', 'depth']])
+            try:
+                residual = arrival['time'] - event['time'] - tti((rho, theta, phi))
+            except:
+                residual = None
+            if residual is not None:
+                df_residuals = df_residuals.append(
+                        pd.DataFrame(
+                            [[station_id, event_id, phase, residual]],
+                            columns=['station_id', 'event_id', 'phase', 'residual']
+                        ),
+                    ignore_index=True
+                )
         df_residuals = COMM.gather(df_residuals, root=ROOT_RANK)
         if RANK == ROOT_RANK:
             df_residuals = pd.concat(
