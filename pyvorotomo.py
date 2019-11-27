@@ -243,7 +243,7 @@ def _compute_residuals(payload, argc, params, iiter):
         compute_traveltime_lookup_tables(payload, 'S', wdir)
         df_arrivals = COMM.scatter(
             None if RANK is not ROOT_RANK else np.array_split(
-                payload['df_arrivals'].sort_values(["station_id", "phase"]).iloc[:1000],
+                payload['df_arrivals'].sort_values(["station_id", "phase"]),
                 WORLD_SIZE
             ),
             root=ROOT_RANK
