@@ -1032,6 +1032,8 @@ def _residual_computation_loop(payload, wdir):
             return (df_residuals)
         for phase in ('P', 'S'):
             vmodel = payload['vmodel_p'] if phase is 'P' else payload['vmodel_s']
+            if station_id not in df_stations.index.unique(): # This shouldn't happen
+                continue
             station = df_stations.loc[station_id]
             station['station_id'] = station.name
             compute_traveltime_lookup_table(station, vmodel, wdir, tag=phase)
