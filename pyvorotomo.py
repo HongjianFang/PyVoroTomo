@@ -227,7 +227,7 @@ def compute_residuals(payload, argc, params, iiter):
     try:
         return (_compute_residuals(payload, argc, params, iiter))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -275,7 +275,7 @@ def compute_traveltime_lookup_table(station, vmodel, wdir, tag=None):
     try:
         return (_compute_traveltime_lookup_table(station, vmodel, wdir, tag=tag))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -315,7 +315,7 @@ def compute_traveltime_lookup_tables(payload, phase, wdir):
     try:
         return (_compute_traveltime_lookup_tables(payload, phase, wdir))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -374,7 +374,7 @@ def id_distribution_loop(event_ids):
     try:
         return (_id_distribution_loop(event_ids))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -404,7 +404,7 @@ def event_location_loop(payload, params, wdir):
     try:
         return (_event_location_loop(payload, params, wdir))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -451,7 +451,7 @@ def find_ray_idx(ray, vcells):
     try:
         return (_find_ray_idx(ray, vcells))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -481,7 +481,7 @@ def generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G
     try:
         return (_generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -552,7 +552,7 @@ def generate_projection_matrix(grid, ncell=300):
     try:
         return (_generate_projection_matrix(grid, ncell=ncell))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -586,7 +586,7 @@ def generate_voronoi_cells(grid, ncell):
     try:
         return (_generate_voronoi_cells(grid, ncell))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -695,7 +695,7 @@ def iterate_inversion(payload, argc, params, iiter):
     try:
         return (_iterate_inversion(payload, argc, params, iiter))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -880,7 +880,7 @@ def locate_event(df_arrivals, bounds, params, wdir):
     try:
         return (_locate_event(df_arrivals, bounds, params, wdir))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -917,7 +917,7 @@ def locate_events(df_arrivals, bounds, wdir):
     try:
         return (_locate_events(df_arrivals, bounds, wdir))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -955,7 +955,7 @@ def realize_random_trial(payload, params, phase, wdir):
     try:
         return (_realize_random_trial(payload, params, phase, wdir))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -1001,7 +1001,7 @@ def residual_computation_loop(payload, wdir):
     try:
         return (_residual_computation_loop(payload, wdir))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -1030,18 +1030,18 @@ def _residual_computation_loop(payload, wdir):
         logger.debug(f"Computing residuals for station {station_id}")
         if station_id is None:
             return (df_residuals)
+        elif station_id not in df_stations.index.unique(): # This shouldn't happen
+            continue
         for phase in ('P', 'S'):
-            vmodel = payload['vmodel_p'] if phase is 'P' else payload['vmodel_s']
-            if station_id not in df_stations.index.unique(): # This shouldn't happen
+            if phase not in df_arrivals.loc[station_id].index.unique():
                 continue
+            vmodel = payload['vmodel_p'] if phase is 'P' else payload['vmodel_s']
             station = df_stations.loc[station_id]
             station['station_id'] = station.name
             compute_traveltime_lookup_table(station, vmodel, wdir, tag=phase)
             fname = os.path.join(wdir, f'{station_id}.{phase}.npz')
             solver = load_solver_from_disk(fname)
             tti = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
-            if phase not in df_arrivals.loc[station_id].index.unique():
-                continue
             for idx, arrival in df_arrivals.loc[(station_id, phase)].iterrows():
                 event_id = arrival['event_id']
                 event = df_events.loc[event_id]
@@ -1081,7 +1081,7 @@ def sanitize_data(df_events, df_arrivals, df_stations, params):
             )
         )
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 def _sanitize_data(df_events, df_arrivals, df_stations, params):
@@ -1249,7 +1249,7 @@ def update_event_locations(payload, argc, params, iiter):
     try:
         return (_update_event_locations(payload, argc, params, iiter))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -1307,7 +1307,7 @@ def update_velocity_model(payload, params, phase):
     try:
         return (_update_velocity_model(payload, params, phase))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -1357,7 +1357,7 @@ def write_events_to_disk(payload, df_residuals, params, argc, iiter):
     try:
         return (_write_events_to_disk(payload, df_residuals, params, argc, iiter))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
@@ -1393,7 +1393,7 @@ def write_vmodel_to_disk(vmodel, phase, params, argc, iiter):
     try:
         return (_write_vmodel_to_disk(vmodel, phase, params, argc, iiter))
     except Exception as exc:
-        logger.error(exc)
+        logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
