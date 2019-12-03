@@ -1,3 +1,5 @@
+TEMPFILE = "/home/malcolmw/scratch/traveltimes_HK1D"
+
 import argparse
 import configparser
 import logging
@@ -75,6 +77,12 @@ def parse_args():
         help='Output directory'
     )
     parser.add_argument(
+        '-d',
+        '--differentials',
+        type=str,
+        help='Differential arrival time data'
+    )
+    parser.add_argument(
         "-l",
         "--logfile",
         type=str,
@@ -133,6 +141,7 @@ def load_params(argc):
     params['niter'] = parser.getint('Data Sampling Parameters', 'niter')
     params['maxres'] = parser.getfloat('Data Sampling Parameters', 'maxres')
     params['maxdist'] = parser.getfloat('Data Sampling Parameters', 'maxdist')
+    params['ccmin'] = parser.getfloat('Data Sampling Parameters', 'ccmin')
     params['atol'] = parser.getfloat('Convergence Parameters', 'atol')
     params['btol'] = parser.getfloat('Convergence Parameters', 'btol')
     params['maxiter'] = parser.getint('Convergence Parameters', 'maxiter')
@@ -234,13 +243,14 @@ def compute_residuals(payload, argc, params, iiter):
 def _compute_residuals(payload, argc, params, iiter):
     try:
         wdir = COMM.bcast(
-            None if RANK is not ROOT_RANK else tempfile.mkdtemp(dir=argc.working_dir),
+            None if RANK is not ROOT_RANK else TEMPFILE if TEMPFILE is not None else tempfile.mkdtemp(dir=argc.working_dir),
             root=ROOT_RANK
         )
         if RANK == ROOT_RANK:
             logger.info(f'Computing residuals.')
-        compute_traveltime_lookup_tables(payload, 'P', wdir)
-        compute_traveltime_lookup_tables(payload, 'S', wdir)
+        if TEMPFILE is None:
+            compute_traveltime_lookup_tables(payload, 'P', wdir)
+            compute_traveltime_lookup_tables(payload, 'S', wdir)
         df_arrivals = COMM.scatter(
             None if RANK is not ROOT_RANK else np.array_split(
                 payload['df_arrivals'].sort_values(["station_id", "phase"]),
@@ -296,7 +306,8 @@ def _compute_residuals(payload, argc, params, iiter):
     finally:
         if RANK == ROOT_RANK:
             logger.info(f'Removing working directory {wdir}')
-            shutil.rmtree(wdir)
+            if TEMPFILE is None:
+                shutil.rmtree(wdir)
     return (df_residuals)
 
 
@@ -503,7 +514,7 @@ def _find_ray_idx(ray, vcells):
     return (idxs, counts)
 
 
-def generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj):
+def generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj, is_diff=False):
     """
     Return the G matrix and data vector for the inverse problem: Gm = d.
 
@@ -517,13 +528,13 @@ def generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G
     :return: G matrix and data vector.
     """
     try:
-        return (_generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj))
+        return (_generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj, is_diff=is_diff))
     except Exception as exc:
         logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
-def _generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj):
+def _generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, G_proj, is_diff=False):
     col_idx_proj = np.array([], dtype=DTYPE_INT)
     nsegs = np.array([], dtype=DTYPE_INT)
     residuals = np.array([], dtype=DTYPE_REAL)
@@ -534,22 +545,51 @@ def _generate_inversion_matrix(payload, params, phase, wdir, df_sample, vcells, 
     for station_id in df_sample.index.unique(level='station_id'):
         fname = os.path.join(wdir, f'{station_id}.{phase}.npz')
         solver = load_solver_from_disk(fname)
-        for event_id in df_sample.loc[station_id].index.values:
-            ret = trace_ray(
-                df_events.loc[event_id],
-                df_sample.loc[(station_id, event_id)],
-                solver,
-                vcells
-            )
-            if ret is None:
-                continue
-            residual, _col_idx_proj, _nsegs, _nonzero_proj = ret
-            if np.abs(residual) > params['maxres']:
-                continue
-            col_idx_proj = np.append(col_idx_proj, _col_idx_proj)
-            nsegs = np.append(nsegs, _nsegs)
-            nonzero_proj = np.append(nonzero_proj, _nonzero_proj)
-            residuals = np.append(residuals, residual)
+        if is_diff:
+            for event_id_A, event_id_B in df_sample.loc[station_id].index.values:
+                ret = trace_ray(
+                    df_events.loc[event_id_A],
+                    solver,
+                    vcells
+                )
+                if ret is None:
+                    break
+                tt_synthetic_A, _col_idx_proj_A, _nsegs_A, _nonzero_proj_A = ret
+                ret = trace_ray(
+                    df_events.loc[event_id_B],
+                    solver,
+                    vcells
+                )
+                if ret is None:
+                    break
+                tt_synthetic_B, _col_idx_proj_B, _nsegs_B, _nonzero_proj_B = ret
+                col_idx_proj = np.append(col_idx_proj, _col_idx_proj_A)
+                col_idx_proj = np.append(col_idx_proj, _col_idx_proj_B)
+                nsegs = np.append(nsegs, _nsegs_A+_nsegs_B)
+                nonzero_proj = np.append(nonzero_proj, -_nonzero_proj_A)
+                nonzero_proj = np.append(nonzero_proj, _nonzero_proj_B)
+                dt_synthetic = tt_synthetic_B - tt_synthetic_A
+                dt_obs = df_sample.loc[(station_id, event_id_A, event_id_B), 'travel_time']
+                residual = (dt_obs - dt_synthetic)
+                logger.debug(residual)
+                residuals = np.append(residuals, residual)
+        else:
+            for event_id in df_sample.loc[station_id].index.values:
+                ret = trace_ray(
+                    df_events.loc[event_id],
+                    solver,
+                    vcells
+                )
+                if ret is None:
+                    continue
+                tt_synthetic, _col_idx_proj, _nsegs, _nonzero_proj = ret
+                residual = df_sample.loc[(station_id, event_id), 'travel_time'] - tt_synthetic
+                if np.abs(residual) > params['maxres']:
+                    continue
+                col_idx_proj = np.append(col_idx_proj, _col_idx_proj)
+                nsegs = np.append(nsegs, _nsegs)
+                nonzero_proj = np.append(nonzero_proj, _nonzero_proj)
+                residuals = np.append(residuals, residual)
     col_idx_proj = COMM.gather(col_idx_proj, root=ROOT_RANK)
     residuals = COMM.gather(residuals, root=ROOT_RANK)
     nsegs = COMM.gather(nsegs, root=ROOT_RANK)
@@ -742,28 +782,40 @@ def _iterate_inversion(payload, argc, params, iiter):
     if iiter == 0:
         if argc.relocate_events is True:
             payload['df_events'] = update_event_locations(payload, argc, params, iiter-1)
-        df_residuals = compute_residuals(payload, argc, params, iiter-1)
-        if RANK == ROOT_RANK:
-            write_events_to_disk(payload, df_residuals, params, argc, iiter-1)
+        #df_residuals = compute_residuals(payload, argc, params, iiter-1)
+        #if RANK == ROOT_RANK:
+        #    write_events_to_disk(payload, df_residuals, params, argc, iiter-1)
 
     # Update P-wave velocity model.
-    payload['vmodel_p'] = update_velocity_model(payload, params, 'P')
+    #if RANK == ROOT_RANK:
+    #    logger.info(f'Updating P-wave velocity model using absolute arrival times.')
+    #payload['vmodel_p'] = update_velocity_model(payload, params, 'P')
+    if payload['df_diff'] is not None:
+        if RANK == ROOT_RANK:
+            logger.info(f'Updating P-wave velocity model using differential arrival times.')
+        payload['vmodel_p'] = update_velocity_model(payload, params, 'P', is_diff=True)
     # Save P-wave velocity model to disk.
     if RANK == ROOT_RANK:
         write_vmodel_to_disk(payload['vmodel_p'], 'P', params, argc, iiter)
 
-    # Update S-wave velocity model.
-    payload['vmodel_s'] = update_velocity_model(payload, params, 'S')
-    # Save S-wave velocity model to disk.
-    if RANK == ROOT_RANK:
-        write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
+    ## Update S-wave velocity model.
+    #if RANK == ROOT_RANK:
+    #    logger.info(f'Updating S-wave velocity model using absolute arrival times.')
+    #payload['vmodel_s'] = update_velocity_model(payload, params, 'S')
+    #if payload['df_diff'] is not None:
+    #    if RANK == ROOT_RANK:
+    #        logger.info(f'Updating S-wave velocity model using differential arrival times.')
+    #    payload['vmodel_s'] = update_velocity_model(payload, params, 'S', is_diff=True)
+    ## Save S-wave velocity model to disk.
+    #if RANK == ROOT_RANK:
+    #    write_vmodel_to_disk(payload['vmodel_s'], 'S', params, argc, iiter)
 
-    # Update event locations.
-    if argc.relocate_events is True:
-        payload['df_events'] = update_event_locations(payload, argc, params, iiter)
-    df_residuals = compute_residuals(payload, argc, params, iiter)
-    if RANK == ROOT_RANK:
-        write_events_to_disk(payload, df_residuals, params, argc, iiter)
+    ## Update event locations.
+    #if argc.relocate_events is True:
+    #    payload['df_events'] = update_event_locations(payload, argc, params, iiter)
+    ##df_residuals = compute_residuals(payload, argc, params, iiter)
+    ##if RANK == ROOT_RANK:
+    ##    write_events_to_disk(payload, df_residuals, params, argc, iiter)
 
     return (payload)
 
@@ -778,7 +830,12 @@ def load_event_data(argc, params):
     with pd.HDFStore(argc.event_file) as store:
         df_events = store['events']
         df_arrivals = store['arrivals']
-    return (df_events, df_arrivals)
+    if argc.differentials is not None:
+        with pd.HDFStore(argc.differentials) as store:
+            df_diff = store["diff"]
+    else:
+        df_diff = None
+    return (df_events, df_arrivals, df_diff)
 
 
 def load_initial_velocity_model(params, phase):
@@ -840,15 +897,16 @@ def load_payload(argc, params):
     # Load event and network data.
     if RANK == ROOT_RANK:
         logger.info("Loading event data.")
-    df_events, df_arrivals = load_event_data(argc, params)
+    df_events, df_arrivals, df_diff = load_event_data(argc, params)
     if RANK == ROOT_RANK:
         logger.info("Loading network data.")
     df_stations = load_network_data(argc)
     if RANK == ROOT_RANK:
         logger.info("Sanitizing data.")
-    df_events, df_arrivals, df_stations = sanitize_data(
+    df_events, df_arrivals, df_diff, df_stations = sanitize_data(
         df_events,
         df_arrivals,
+        df_diff,
         df_stations,
         params
     )
@@ -860,6 +918,7 @@ def load_payload(argc, params):
     payload = dict(
         df_events=df_events,
         df_arrivals=df_arrivals,
+        df_diff=df_diff,
         df_stations=df_stations,
         vmodel_p=vmodel_p,
         vmodel_s=vmodel_s
@@ -977,7 +1036,7 @@ def _locate_events(df_arrivals, bounds, wdir):
     return (df_events)
 
 
-def realize_random_trial(payload, params, phase, wdir):
+def realize_random_trial(payload, params, phase, wdir, is_diff=False):
     """
     Update the velocity model for one random realization.
 
@@ -991,19 +1050,19 @@ def realize_random_trial(payload, params, phase, wdir):
     :rtype: VelocityModel
     """
     try:
-        return (_realize_random_trial(payload, params, phase, wdir))
+        return (_realize_random_trial(payload, params, phase, wdir, is_diff=is_diff))
     except Exception as exc:
         logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
-def _realize_random_trial(payload, params, phase, wdir):
+def _realize_random_trial(payload, params, phase, wdir, is_diff=False):
     vmodel = payload['vmodel_p'] if phase == 'P' else payload['vmodel_s']
     if RANK == ROOT_RANK:
         # Generate Voronoi cells and projection matrix
         vcells, G_proj = generate_projection_matrix(vmodel.grid, params['ncell'])
         # Generate random sample of data
-        df_sample = sample_observed_data(params, payload, phase)
+        df_sample = sample_observed_data(params, payload, phase, ncell=params['ncell'], is_diff=is_diff)
     vcells = COMM.bcast(None if RANK is not ROOT_RANK else vcells, root=ROOT_RANK)
     G_proj = COMM.bcast(None if RANK is not ROOT_RANK else G_proj, root=ROOT_RANK)
     df_sample = COMM.bcast(None if RANK is not ROOT_RANK else df_sample, root=ROOT_RANK)
@@ -1014,7 +1073,8 @@ def _realize_random_trial(payload, params, phase, wdir):
         wdir,
         df_sample,
         vcells,
-        G_proj
+        G_proj,
+        is_diff=is_diff
     )
     # Solve matrix
     dslo_proj = scipy.sparse.linalg.lsmr(
@@ -1098,7 +1158,7 @@ def _residual_computation_loop(payload, wdir):
                     )
 
 
-def sanitize_data(df_events, df_arrivals, df_stations, params):
+def sanitize_data(df_events, df_arrivals, df_diff, df_stations, params):
     """
     Sanitize data to include only observations that will be inverted.
 
@@ -1114,6 +1174,7 @@ def sanitize_data(df_events, df_arrivals, df_stations, params):
             _sanitize_data(
                 df_events,
                 df_arrivals,
+                df_diff,
                 df_stations,
                 params
             )
@@ -1122,7 +1183,7 @@ def sanitize_data(df_events, df_arrivals, df_stations, params):
         logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
-def _sanitize_data(df_events, df_arrivals, df_stations, params):
+def _sanitize_data(df_events, df_arrivals, df_diff, df_stations, params):
     latmin, lonmin, depmin = params['latmin'], params['lonmin'], params['depmin']
     nlat, nlon, ndep = params['nlat'], params['nlon'], params['ndep']
     dlat, dlon, ddep = params['dlat'], params['dlon'], params['ddep']
@@ -1149,12 +1210,21 @@ def _sanitize_data(df_events, df_arrivals, df_stations, params):
         &(df_stations['depth'] >= depmin)
         &(df_stations['depth'] <= depmax)
     ]
-    # Remove arrival at stations without metadata or associated with
+    # Remove arrivals at stations without metadata or associated with
     # unlocated event.
     df_arrivals = df_arrivals[
          (df_arrivals['station_id'].isin(df_stations['station_id'].unique()))
         &(df_arrivals['event_id'].isin(df_events['event_id'].unique()))
     ]
+    # Remove differentials at stations without metadata or associated with
+    # unlocated events.
+    if df_diff is not None:
+        df_diff = df_diff[
+             (df_diff['station_id'].isin(df_stations['station_id'].unique()))
+            &(df_diff['event_id_A'].isin(df_events['event_id'].unique()))
+            &(df_diff['event_id_B'].isin(df_events['event_id'].unique()))
+            &(df_diff['ccmax'] >= params['ccmin'])
+        ]
     # Remove arrivals with event-to-station distance > maxdist.
     df_arrivals = df_arrivals.merge(
         df_events[['lat', 'lon', 'event_id']],
@@ -1178,15 +1248,12 @@ def _sanitize_data(df_events, df_arrivals, df_stations, params):
     df_stations[
         df_stations['station_id'].isin(df_arrivals['station_id'].unique())
     ]
-    return (df_events, df_arrivals, df_stations)
+    return (df_events, df_arrivals, df_diff, df_stations)
 
-def sample_observed_data(params, payload, phase, homo_sample=False, ncell=500):
+def sample_observed_data(params, payload, phase, ncell=500, is_diff=False):
     """
     Return a random sample of arrivals from the observed data set.
-    nsamp now represents how many events are used in the inversion,
-    rather than how many traveltime data.
 
-    :type homo_sample:
     :param params:
     :param payload:
     :return:
@@ -1194,55 +1261,90 @@ def sample_observed_data(params, payload, phase, homo_sample=False, ncell=500):
     vmodel = payload['vmodel_p'] if phase is 'P' else payload['vmodel_s']
     grid = vmodel.grid
     df_events = payload['df_events']
-    df_arrivals = payload['df_arrivals']
+    if is_diff is True:
+        df_arrivals = payload['df_diff']
+    else:
+        df_arrivals = payload['df_arrivals']
     df_arrivals = df_arrivals[df_arrivals['phase'] == phase]
+    if is_diff is True:
+        df_arrivals = df_arrivals.merge(
+            df_events[
+                ['lat', 'lon', 'depth', 'time', 'event_id']
+            ],
+            left_on='event_id_A',
+            right_on='event_id',
+        ).merge(
+            df_events[
+                ['lat', 'lon', 'depth', 'time', 'event_id']
+            ],
+            left_on='event_id_B',
+            right_on='event_id',
+            suffixes=('_origin_A', '_origin_B')
+        )
+    else:
+        df_arrivals = df_arrivals.merge(
+            df_events[
+                ['lat', 'lon', 'depth', 'time', 'event_id']
+            ].rename(
+                columns={
+                    'lat': 'lat_origin',
+                    'lon': 'lon_origin',
+                    'depth': 'depth_origin',
+                }
+            ),
+            on='event_id',
+            suffixes=('_arrival', '_origin')
+        )
     df_arrivals = df_arrivals.merge(
-        payload['df_events'][
-            ['lat', 'lon', 'depth', 'time', 'event_id']
-        ],
-        on='event_id',
-        suffixes=('_arrival', '_origin')
-    ).merge(
         payload['df_stations'][
             ['lat', 'lon', 'depth', 'station_id']
-        ],
+            ].rename(
+                columns={
+                    'lat': 'lat_station',
+                    'lon': 'lon_station',
+                    'depth': 'depth_station',
+                }
+            ),
         on='station_id',
-        suffixes=('_origin', '_station')
     )
-    origin_xyz = sph2xyz(geo2sph(df_arrivals[['lat_origin', 'lon_origin', 'depth_origin']]))
-    df_arrivals['origin_x'] = origin_xyz[:, 0]
-    df_arrivals['origin_y'] = origin_xyz[:, 1]
-    df_arrivals['origin_z'] = origin_xyz[:, 2]
-    station_xyz = sph2xyz(geo2sph(df_arrivals[['lat_station', 'lon_station', 'depth_station']]))
-    df_arrivals['station_x'] = station_xyz[:, 0]
-    df_arrivals['station_y'] = station_xyz[:, 1]
-    df_arrivals['station_z'] = station_xyz[:, 2]
+    if is_diff is True:
+        suffixes = ('_origin_A', '_origin_B', '_station')
+    else:
+        suffixes = ('_origin', '_station')
     vcells = scipy.spatial.cKDTree(
         sph2xyz(generate_voronoi_cells(grid, ncell=ncell))
     )
-    df_arrivals['origin_cell_id'] = vcells.query(
-        df_arrivals[['origin_x', 'origin_y', 'origin_z']].values
-    )[1]
-    df_arrivals['station_cell_id'] = vcells.query(
-        df_arrivals[['station_x', 'station_y', 'station_z']].values
-    )[1]
-    df_arrivals['path_id'] = list(zip(df_arrivals['origin_cell_id'], df_arrivals['station_cell_id']))
+    path_ids = []
+    for suffix in suffixes:
+        columns = [f'{field}{suffix}' for field in ('lat', 'lon', 'depth')]
+        xyz = sph2xyz(geo2sph(df_arrivals[columns]))
+        path_ids.append(vcells.query(xyz)[1])
+    df_arrivals['path_id'] = tuple(map(tuple, np.stack(path_ids).T))
     value_counts = df_arrivals['path_id'].value_counts()
     df_arrivals['weight'] = (1 / value_counts.loc[df_arrivals['path_id']]).values
     df_sample = df_arrivals.sample(weights='weight', n=params['nsamp'])
-    df_sample['travel_time'] = df_sample['time_arrival'] - df_sample['time_origin']
-    df_sample = df_sample[['station_id', 'event_id', 'phase', 'travel_time']]
+    if is_diff:
+        df_sample['travel_time'] = df_sample['dt'] - (df_sample['time_origin_B'] - df_sample['time_origin_A'])
+        columns = ['station_id', 'event_id_A',  'event_id_B', 'phase', 'travel_time']
+    else:
+        df_sample['travel_time'] = df_sample['time_arrival'] - df_sample['time_origin']
+        columns = ['station_id', 'event_id', 'phase', 'travel_time']
+    df_sample = df_sample[columns]
+    if is_diff:
+        index_keys = ['station_id', 'event_id_A', 'event_id_B']
+    else:
+        index_keys = ['station_id', 'event_id']
     df_sample = df_sample.drop_duplicates(
-        ['station_id', 'event_id']
+        index_keys
     ).sort_values(
-        ['station_id', 'event_id']
+        index_keys
     ).set_index(
-        ['station_id', 'event_id']
+        index_keys
     )
     return (df_sample)
 
 
-def trace_ray(event, arrival, solver, vcells):
+def trace_ray(event, solver, vcells):
     """
     Return matrix entries for a single ray.
     :param event:
@@ -1251,27 +1353,25 @@ def trace_ray(event, arrival, solver, vcells):
     :return:
     """
     try:
-        return (_trace_ray(event, arrival, solver, vcells))
+        return (_trace_ray(event, solver, vcells))
     except pykonal.OutOfBoundsError as exc:
         logger.warning(exc)
-        logger.warning(f"{arrival.name}---{exc}")
         return (None)
     except Exception as exc:
         logger.error(exc)
         raise
 
 
-def _trace_ray(event, arrival, solver, vcells):
+def _trace_ray(event, solver, vcells):
     nonzerop = np.array([], dtype=DTYPE_REAL)
     tti = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
     rho_src, theta_src, phi_src = geo2sph(event[['lat', 'lon', 'depth']])
-    synthetic = tti((rho_src, theta_src, phi_src))
-    residual = arrival['travel_time'] - synthetic
+    tt_synthetic = tti((rho_src, theta_src, phi_src))
     ray = solver.trace_ray((rho_src, theta_src, phi_src))
     idxs, counts = find_ray_idx(ray, vcells)
     nseg = len(idxs)
     nonzerop = counts * solver._get_step_size()
-    return (residual, idxs, nseg, nonzerop)
+    return (tt_synthetic, idxs, nseg, nonzerop)
 
 
 def update_event_locations(payload, argc, params, iiter):
@@ -1294,7 +1394,7 @@ def update_event_locations(payload, argc, params, iiter):
 def _update_event_locations(payload, argc, params, iiter):
     try:
         wdir = COMM.bcast(
-            None if RANK is not ROOT_RANK else tempfile.mkdtemp(dir=argc.working_dir),
+            None if RANK is not ROOT_RANK else TEMPFILE if TEMPFILE is not None else tempfile.mkdtemp(dir=argc.working_dir),
             root=ROOT_RANK
         )
         if RANK == ROOT_RANK:
@@ -1302,10 +1402,12 @@ def _update_event_locations(payload, argc, params, iiter):
         # Compute traveltime-lookup tables
         if RANK == ROOT_RANK:
             logger.info("Computing P-wave traveltime-lookup tables.")
-        compute_traveltime_lookup_tables(payload, 'P', wdir)
+        if TEMPFILE is None:
+            compute_traveltime_lookup_tables(payload, 'P', wdir)
         if RANK == ROOT_RANK:
             logger.info("Computing S-wave traveltime-lookup tables.")
-        compute_traveltime_lookup_tables(payload, 'S', wdir)
+        if TEMPFILE is None:
+            compute_traveltime_lookup_tables(payload, 'S', wdir)
         COMM.barrier()
         event_ids = payload['df_arrivals']['event_id'].unique()
         if RANK == ROOT_RANK:
@@ -1327,11 +1429,12 @@ def _update_event_locations(payload, argc, params, iiter):
     finally:
         if RANK == ROOT_RANK:
             logger.info(f'Removing working directory {wdir}')
-            shutil.rmtree(wdir)
+            if TEMPFILE is None:
+                shutil.rmtree(wdir)
     return (df_events)
 
 
-def update_velocity_model(payload, params, phase):
+def update_velocity_model(payload, params, phase, is_diff=False):
     """
     Return updated velocity model.
 
@@ -1343,17 +1446,17 @@ def update_velocity_model(payload, params, phase):
     :type wdir: str
     """
     try:
-        return (_update_velocity_model(payload, params, phase))
+        return (_update_velocity_model(payload, params, phase, is_diff=is_diff))
     except Exception as exc:
         logger.error(f"{exc}... Exiting.")
         sys.exit(-1)
 
 
-def _update_velocity_model(payload, params, phase):
+def _update_velocity_model(payload, params, phase, is_diff=False):
     vmodel = payload['vmodel_p'] if phase == 'P' else payload['vmodel_s']
     try:
         wdir = COMM.bcast(
-            None if RANK is not ROOT_RANK else tempfile.mkdtemp(dir=argc.working_dir),
+            None if RANK is not ROOT_RANK else TEMPFILE if TEMPFILE is not None else tempfile.mkdtemp(dir=argc.working_dir),
             root=ROOT_RANK
         )
         if RANK == ROOT_RANK:
@@ -1361,13 +1464,14 @@ def _update_velocity_model(payload, params, phase):
         # Compute traveltime-lookup tables
         if RANK == ROOT_RANK:
             logger.info(f"Computing {phase}-wave traveltime-lookup tables.")
-        compute_traveltime_lookup_tables(payload, phase, wdir)
+        if TEMPFILE is None:
+            compute_traveltime_lookup_tables(payload, phase, wdir)
         COMM.barrier()
         vmodels = []
         for ireal in range(params['nreal']):
             if RANK == ROOT_RANK:
                 logger.info(f"Realizing random trial #{ireal + 1} of {params['nreal']}")
-            vmodels.append(realize_random_trial(payload, params, phase, wdir))
+            vmodels.append(realize_random_trial(payload, params, phase, wdir, is_diff=is_diff))
         COMM.barrier()
         # Update velocity model
         velocity_samples = np.stack([vmodel.velocity for vmodel in vmodels])
@@ -1379,7 +1483,8 @@ def _update_velocity_model(payload, params, phase):
     finally:
         if RANK == ROOT_RANK:
             logger.info(f'Removing working directory {wdir}')
-            shutil.rmtree(wdir)
+            if TEMPFILE is None:
+                shutil.rmtree(wdir)
     return (vmodel)
 
 
