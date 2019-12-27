@@ -265,7 +265,6 @@ def _compute_residuals(payload, argc, params, iiter):
             phase = arrival["phase"]
             fname = os.path.join(wdir, f'{station_id}.{phase}.npz')
             if fname != last_fname:
-                logger.debug(f"Loading {fname}")
                 solver = load_solver_from_disk(fname)
                 tti = pykonal.LinearInterpolator3D(solver.pgrid, solver.uu)
             last_fname = fname
@@ -422,7 +421,6 @@ def _id_distribution_loop(ids):
     for myid in ids:
         iid += 1
         requesting_rank = COMM.recv(source=mpi4py.MPI.ANY_SOURCE, tag=ID_REQUEST_TAG)
-        logger.debug(f"Sending ID #{iid} of {nids} (ID: {myid}) to processor rank {requesting_rank}")
         COMM.send(myid, dest=requesting_rank, tag=ID_TRANSMISSION_TAG)
     for irank in range(WORLD_SIZE - 1):
         requesting_rank = COMM.recv(source=mpi4py.MPI.ANY_SOURCE, tag=ID_REQUEST_TAG)
