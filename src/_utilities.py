@@ -9,10 +9,11 @@ uninteresting.
 import argparse
 import configparser
 import logging
+import mpi4py.MPI as MPI
 import signal
 
 
-def configure_logger(name, logfile, processor_name, rank, verbose=False):
+def configure_logger(name, logfile, verbose=False):
     """
     A utility function to configure logging. Return True on successful
     execution.
@@ -28,6 +29,8 @@ def configure_logger(name, logfile, processor_name, rank, verbose=False):
     logger = logging.getLogger(name)
     logger.setLevel(level)
     if level == logging.DEBUG:
+        processor_name = MPI.Get_processor_name()
+        rank           = MPI.COMM_WORLD.Get_rank()
         fmt = f"%(asctime)s::%(levelname)s::{name}.%(funcName)s()::%(lineno)d::"\
               f"{processor_name}::{rank:04d}:: %(message)s"
     else:
@@ -144,9 +147,33 @@ def parse_cfg(configuration_file):
         "algorithm",
         "nvoronoi"
     )
-    _cfg["nphase"] = parser.getint(
+    _cfg["narrival"] = parser.getint(
         "algorithm",
-        "nphase"
+        "narrival"
+    )
+    _cfg["outlier_removal_factor"] = parser.getfloat(
+        "algorithm",
+        "outlier_removal_factor"
+    )
+    _cfg["damp"] = parser.getfloat(
+        "algorithm",
+        "damp"
+    )
+    _cfg["atol"] = parser.getfloat(
+        "algorithm",
+        "atol"
+    )
+    _cfg["btol"] = parser.getfloat(
+        "algorithm",
+        "btol"
+    )
+    _cfg["conlim"] = parser.getfloat(
+        "algorithm",
+        "conlim"
+    )
+    _cfg["maxiter"] = parser.getfloat(
+        "algorithm",
+        "maxiter"
     )
     cfg["algorithm"] = _cfg
 
@@ -196,6 +223,32 @@ def parse_cfg(configuration_file):
         "initial_swave_path"
     )
     cfg["model"] = _cfg
+
+    _cfg = dict()
+    _cfg["traveltime_dir"] = parser.get(
+        "workspace",
+        "traveltime_dir"
+    )
+    cfg["workspace"] = _cfg
+
+    _cfg = dict()
+    _cfg["dlat"] = parser.getfloat(
+        "locate",
+        "dlat"
+    )
+    _cfg["dlon"] = parser.getfloat(
+        "locate",
+        "dlon"
+    )
+    _cfg["ddepth"] = parser.getfloat(
+        "locate",
+        "ddepth"
+    )
+    _cfg["dtime"] = parser.getfloat(
+        "locate",
+        "dtime"
+    )
+    cfg["locate"] = _cfg
 
     return (cfg)
 

@@ -43,9 +43,14 @@ def parse_network_geometry(argc):
     pandas.HDFStore. The input file needs to have one table: "stations"."
     The "stations" table needs to have "network", "station", "latitude",
     "longitude", and "elevation" fields. "latitude" and "longitude" are
-    in degrees and "elevation" is in kilometers.
+    in degrees and "elevation" is in kilometers. The returned DataFrame
+    has "network", "station", "latitude", "longitude", and "depth"
+    columns.
     """
+
     network = pd.read_hdf(argc.network, key="stations")
+    network["depth"] = -network["elevation"]
+    network = network.drop(columns=["elevation"])
 
     return (network)
 
@@ -73,7 +78,7 @@ def parse_velocity_models(cfg):
     depth_max = depth_min  +  (ndepth - 1) * ddepth
     theta_min = np.radians(90 - lat_max)
     phi_min = np.radians(lon_min)
-    rho_min = _constants.earth_radius - depth_max
+    rho_min = _constants.EARTH_RADIUS - depth_max
     ntheta = nlat
     nphi = nlon
     nrho = ndepth
