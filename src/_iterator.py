@@ -19,6 +19,8 @@ geo2sph = pykonal.transformations.geo2sph
 sph2geo = pykonal.transformations.sph2geo
 sph2xyz = pykonal.transformations.sph2xyz
 
+RANK = MPI.COMM_WORLD.Get_rank()
+
 
 class InversionIterator(object):
     """
@@ -37,6 +39,8 @@ class InversionIterator(object):
         self._swave_model = None
         self._pwave_realization_stack = None
         self._swave_realization_stack = None
+        self._pwave_variance = None
+        self._swave_variance = None
         self._rank = self._comm.Get_rank()
         self._residuals = None
         self._sensitivity_matrix = None
@@ -104,6 +108,14 @@ class InversionIterator(object):
         self._pwave_realization_stack = value
 
     @property
+    def pwave_variance(self):
+        return (self._pwave_variance)
+
+    @pwave_variance.setter
+    def pwave_variance(self, value):
+        self._pwave_variance = value
+
+    @property
     def rank(self):
         return (self._rank)
 
@@ -158,6 +170,14 @@ class InversionIterator(object):
         self._swave_realization_stack = value
 
     @property
+    def swave_variance(self):
+        return (self._swave_variance)
+
+    @swave_variance.setter
+    def swave_variance(self, value):
+        self._swave_variance = value
+
+    @property
     def voronoi_cells(self):
         return (self._voronoi_cells)
 
@@ -171,14 +191,16 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
+    @_utilities.root_only(RANK)
     def _compute_model_update(self, phase):
         """
         Compute the model update for a single realization and appends
         the results to the realization stack.
+
+        Only the root rank performs this operation.
         """
 
-        if self.rank != _constants.ROOT_RANK:
-            return (True)
+        logger.debug(f"Computing {phase}-wave model update")
 
         if phase == "P":
             model = self.pwave_model
@@ -223,11 +245,14 @@ class InversionIterator(object):
         Compute the sensitivity matrix.
         """
 
+        logger.info(f"Computing {phase}-wave sensitivity matrix")
+
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
         traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
 
         index_keys = ["network", "station"]
         arrivals = self.sampled_arrivals.set_index(index_keys)
+
         arrivals = arrivals.sort_index()
 
         root = _constants.ROOT_RANK
@@ -321,6 +346,8 @@ class InversionIterator(object):
                     nonzero_values = np.append(nonzero_values, counts * step_size)
                     residuals = np.append(residuals, arrival["residual"])
 
+        self.comm.barrier()
+
         return (True)
 
 
@@ -329,6 +356,8 @@ class InversionIterator(object):
         """
         Dispatch ids to hungry workers, then dispatch sentinels.
         """
+
+        logger.debug("Dispatching ids")
 
         for _id in ids:
             requesting_rank = self.comm.recv(
@@ -446,7 +475,10 @@ class InversionIterator(object):
         Update the projection matrix using the current Voronoi cells.
         """
 
+        logger.info("Updating projection matrix")
+
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
+
         if self.rank == _constants.ROOT_RANK:
             voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
             tree = scipy.spatial.cKDTree(voronoi_cells)
@@ -473,6 +505,9 @@ class InversionIterator(object):
         """
         Compute traveltime-lookup tables.
         """
+
+        logger.info("Computing traveltime-lookup tables.")
+
         traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
         if self.rank == _constants.ROOT_RANK:
             os.makedirs(traveltime_dir, exist_ok=True)
@@ -527,18 +562,22 @@ class InversionIterator(object):
         updating velocity models, event locations, and arrival residuals.
         """
 
+        logger.info("Iterating inversion procedure.")
+
+        nreal = self.cfg["algorithm"]["nreal"]
         for phase in ("P", "S"):
-            for ireal in range(self.cfg["algorithm"]["nreal"]):
+            logger.info(f"Updating {phase}-wave model")
+            for ireal in range(nreal):
+                logger.info(f"Realization #{ireal+1} (/{nreal})")
                 self._sample_arrivals(phase)
                 self._generate_voronoi_cells()
                 self._update_projection_matrix()
                 self._compute_sensitivity_matrix(phase)
                 self._compute_model_update(phase)
-                logger.debug(len(self.pwave_realization_stack))
-    #     - Stack realizations.
-    #     - Relocate events.
-    #     - Compute arrival residuals.
-
+        self.update_models()
+        self.compute_traveltime_lookup_tables()
+        self.relocate_events()
+        self.update_arrival_residuals()
 
 
     @_utilities.log_errors(logger)
@@ -550,13 +589,14 @@ class InversionIterator(object):
         other processes.
         """
 
-        if self.rank != _constants.ROOT_RANK:
-            return (True)
+        logger.info("Loading configuration-file parameters.")
 
-        logger.debug("Loading configuration file.")
+        if self.rank == _constants.ROOT_RANK:
 
-        # Parse configuration-file parameters.
-        self.cfg = _utilities.parse_cfg(self.argc.configuration_file)
+            # Parse configuration-file parameters.
+            self.cfg = _utilities.parse_cfg(self.argc.configuration_file)
+
+        self.synchronize(attrs=["cfg"])
 
         return (True)
 
@@ -570,14 +610,15 @@ class InversionIterator(object):
         processes.
         """
 
-        if self.rank != _constants.ROOT_RANK:
-            return (True)
+        logger.info("Loading event data.")
 
-        logger.debug("Loading event data.")
+        if self.rank == _constants.ROOT_RANK:
 
-        # Parse event data.
-        data = _dataio.parse_event_data(self.argc)
-        self.events, self.arrivals = data
+            # Parse event data.
+            data = _dataio.parse_event_data(self.argc)
+            self.events, self.arrivals = data
+
+        self.synchronize(attrs=["events"])
 
         return (True)
 
@@ -591,14 +632,15 @@ class InversionIterator(object):
         processes.
         """
 
-        if self.rank != _constants.ROOT_RANK:
-            return (True)
+        logger.info("Loading network geometry")
 
-        logger.debug("Loading network geometry.")
+        if self.rank == _constants.ROOT_RANK:
 
-        # Parse event data.
-        stations = _dataio.parse_network_geometry(self.argc)
-        self.stations = stations
+            # Parse event data.
+            stations = _dataio.parse_network_geometry(self.argc)
+            self.stations = stations
+
+        self.synchronize(attrs=["stations"])
 
         return (True)
 
@@ -612,14 +654,15 @@ class InversionIterator(object):
         processes.
         """
 
-        if self.rank != _constants.ROOT_RANK:
-            return (True)
+        logger.info("Loading velocity models.")
 
-        logger.debug("Loading velocity models.")
+        if self.rank == _constants.ROOT_RANK:
 
-        # Parse velocity model files.
-        velocity_models = _dataio.parse_velocity_models(self.cfg)
-        self.pwave_model, self.swave_model = velocity_models
+            # Parse velocity model files.
+            velocity_models = _dataio.parse_velocity_models(self.cfg)
+            self.pwave_model, self.swave_model = velocity_models
+
+        self.synchronize(attrs=["pwave_model", "swave_model"])
 
         return (True)
 
@@ -629,6 +672,8 @@ class InversionIterator(object):
         """
         Relocate all events and update the "events" attribute.
         """
+
+        logger.info("Relocating events.")
 
         traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
         if self.rank == _constants.ROOT_RANK:
@@ -714,24 +759,56 @@ class InversionIterator(object):
         Sanitize input data.
         """
 
-        if self.rank != _constants.ROOT_RANK:
-            return (True)
+        logger.info("Sanitizing data.")
 
-        logger.debug("Sanitizing data.")
+        if self.rank == _constants.ROOT_RANK:
 
-        # Drop duplicate stations.
-        self.stations = self.stations.drop_duplicates(["network", "station"])
+            # Drop duplicate stations.
+            self.stations = self.stations.drop_duplicates(["network", "station"])
 
-        # Drop stations without arrivals.
-        logger.debug("Dropping stations without arrivals.")
-        arrivals = self.arrivals.set_index(["network", "station"])
-        idx_keep = arrivals.index.unique()
-        stations = self.stations.set_index(["network", "station"])
-        stations = stations.loc[idx_keep]
-        stations = stations.reset_index()
-        self.stations = stations
+            # Drop stations without arrivals.
+            logger.debug("Dropping stations without arrivals.")
+            arrivals = self.arrivals.set_index(["network", "station"])
+            idx_keep = arrivals.index.unique()
+            stations = self.stations.set_index(["network", "station"])
+            stations = stations.loc[idx_keep]
+            stations = stations.reset_index()
+            self.stations = stations
+
+        self.synchronize(attrs=["stations"])
 
         return (True)
+
+
+    @_utilities.log_errors(logger)
+    @_utilities.root_only(RANK)
+    def save(self, path):
+        """
+        Save the current "events", "arrivals", "pwave_model",
+        "pwave_realization_stack", "pwave_variance", "swave_model",
+        "swave_realization_stack", and "swave_variance" to disk.
+
+        "events" and "arrivals" are written to a HDF5 file
+        using pandas.HDFStore and the remaining attributes
+        are written to a NPZ file with handles "pwave_model",
+        "swave_model", "pwave_stack", "swave_stack".
+        """
+        pwave_stack = np.stack(self.pwave_realization_stack)
+        swave_stack = np.stack(self.swave_realization_stack)
+
+        np.savez(
+            f"{path}.model.npz",
+            pwave_model=self.pwave_model,
+            pwave_stack=pwave_stack,
+            pwave_variance=self.pwave_variance,
+            swave_model=self.swave_model,
+            swave_stack=swave_stack,
+            swave_variance=swave_variance,
+            min_coords=pwave_model.min_coords,
+            node_intervals=pwave_model.node_intervals,
+            npts=pwave_model.npts
+        )
+
 
 
     @_utilities.log_errors(logger)
@@ -741,6 +818,8 @@ class InversionIterator(object):
 
         "attrs" may be an iterable of attribute names to synchronize.
         """
+
+        logger.debug(f"Synchronizing attributes: {attrs}")
 
         _all = (
             "arrivals",
@@ -754,10 +833,7 @@ class InversionIterator(object):
             "voronoi_cells"
         )
 
-
         root = _constants.ROOT_RANK
-
-        logger.debug(f"Synchronizing attributes: {attrs}.")
 
         if attrs == "all":
             attrs = _all
@@ -777,6 +853,8 @@ class InversionIterator(object):
         and velocity models, and update "residual" columns of "arrivals"
         attribute.
         """
+
+        logger.info("Updating arrival residuals.")
 
         traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
         arrivals = self.arrivals.set_index(["network", "station", "phase"])
@@ -805,7 +883,8 @@ class InversionIterator(object):
                     logger.debug("Received sentinel. Gathering arrivals.")
                     self.comm.gather(updated_arrivals, root=_constants.ROOT_RANK)
 
-                    return (True)
+                    break
+
 
                 network, station, phase = item
                 logger.debug(f"Updating {phase}-wave residuals for {network}.{station}.")
@@ -834,6 +913,32 @@ class InversionIterator(object):
                     updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
 
         self.synchronize(attrs=["arrivals"])
+
+        return (True)
+
+    @_utilities.log_errors(logger)
+    def update_models(self):
+        """
+        Stack random realizations to obtain average model and update
+        appropriate attributes.
+        """
+
+        if self.rank == _constants.ROOT_RANK:
+            stack = np.stack(self.pwave_realization_stack)
+            self.pwave_model.values = np.mean(stack, axis=0)
+            self.pwave_variance = np.var(stack, axis=0)
+
+            stack = np.stack(self.swave_realization_stack)
+            self.swave_model.values = np.mean(stack, axis=0)
+            self.swave_variance = np.var(stack, axis=0)
+
+        attrs = [
+            "pwave_model",
+            "pwave_variance",
+            "swave_model",
+            "swave_variance"
+        ]
+        self.synchronize(attrs=attrs)
 
         return (True)
 

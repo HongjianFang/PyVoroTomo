@@ -12,6 +12,8 @@ import logging
 import mpi4py.MPI as MPI
 import signal
 
+import _constants
+
 
 def configure_logger(name, logfile, verbose=False):
     """
@@ -20,21 +22,21 @@ def configure_logger(name, logfile, verbose=False):
     """
 
     # Define the date format for logging.
-    datefmt ="%Y%jT%H:%M:%S"
+    datefmt        ="%Y%jT%H:%M:%S"
+    processor_name = MPI.Get_processor_name()
+    rank           = MPI.COMM_WORLD.Get_rank()
 
     if verbose is True:
         level = logging.DEBUG
     else:
-        level = logging.INFO
+        level = logging.INFO if rank == _constants.ROOT_RANK else logging.WARNING
     logger = logging.getLogger(name)
     logger.setLevel(level)
     if level == logging.DEBUG:
-        processor_name = MPI.Get_processor_name()
-        rank           = MPI.COMM_WORLD.Get_rank()
         fmt = f"%(asctime)s::%(levelname)s::{name}.%(funcName)s()::%(lineno)d::"\
               f"{processor_name}::{rank:04d}:: %(message)s"
     else:
-        fmt = f"%(asctime)s::%(levelname)s:: %(message)s"
+        fmt = f"%(asctime)s::%(levelname)s::{rank:04d}:: %(message)s"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
     if logfile is not None:
         file_handler = logging.FileHandler(logfile)
@@ -252,6 +254,31 @@ def parse_cfg(configuration_file):
 
     return (cfg)
 
+
+def root_only(rank, default=True):
+    """
+    A decorator for functions and methods that only the root rank should
+    execute.
+    """
+
+    def _decorate_func(func):
+        """
+        An hidden decorator to permit the rank to be passed in as a
+        decorator argument.
+        """
+
+        def _decorated_func(*args, **kwargs):
+            """
+            The decorated function.
+            """
+            if rank == _constants.ROOT_RANK:
+                return (func(*args, **kwargs))
+            else:
+                return (default)
+
+        return (_decorated_func)
+
+    return (_decorate_func)
 
 
 @log_errors

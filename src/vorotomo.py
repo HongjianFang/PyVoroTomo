@@ -21,7 +21,7 @@ def main(argc):
     The main control loop.
     """
 
-    logger.debug("Starting thread.")
+    logger.info("Starting main loop.")
 
     # Instantiate an InversionIterator object.
     inversion_iterator = _iterator.InversionIterator(argc)
@@ -48,10 +48,10 @@ def main(argc):
     #inversion_iterator.compute_traveltime_lookup_tables()
 
     # Relocate all events.
-    #inversion_iterator.relocate_events()
+    inversion_iterator.relocate_events()
 
     # Update arrival residuals.
-    #inversion_iterator.update_arrival_residuals()
+    inversion_iterator.update_arrival_residuals()
 
     niter = inversion_iterator.cfg["algorithm"]["niter"]
     for iiter in range(niter):
