@@ -45,13 +45,17 @@ def main(argc):
     inversion_iterator.synchronize(attrs="all")
 
     # Compute traveltime-lookup tables.
-    #inversion_iterator.compute_traveltime_lookup_tables()
+    inversion_iterator.compute_traveltime_lookup_tables()
 
     # Relocate all events.
     inversion_iterator.relocate_events()
 
     # Update arrival residuals.
     inversion_iterator.update_arrival_residuals()
+
+    # Save initial data.
+    output_dir = inversion_iterator.cfg["workspace"]["output_dir"]
+    inversion_iterator.save(output_dir)
 
     niter = inversion_iterator.cfg["algorithm"]["niter"]
     for iiter in range(niter):

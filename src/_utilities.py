@@ -14,6 +14,9 @@ import signal
 
 import _constants
 
+COMM = MPI.COMM_WORLD
+RANK = COMM.Get_rank()
+
 
 def configure_logger(name, logfile, verbose=False):
     """
@@ -227,6 +230,10 @@ def parse_cfg(configuration_file):
     cfg["model"] = _cfg
 
     _cfg = dict()
+    _cfg["output_dir"] = parser.get(
+        "workspace",
+        "output_dir"
+    )
     _cfg["traveltime_dir"] = parser.get(
         "workspace",
         "traveltime_dir"
@@ -255,7 +262,7 @@ def parse_cfg(configuration_file):
     return (cfg)
 
 
-def root_only(rank, default=True):
+def root_only(rank, default=True, barrier=True):
     """
     A decorator for functions and methods that only the root rank should
     execute.
@@ -272,8 +279,13 @@ def root_only(rank, default=True):
             The decorated function.
             """
             if rank == _constants.ROOT_RANK:
-                return (func(*args, **kwargs))
+                value = func(*args, **kwargs)
+                if barrier is True:
+                    COMM.barrier()
+                return (value)
             else:
+                if barrier is True:
+                    COMM.barrier()
                 return (default)
 
         return (_decorated_func)

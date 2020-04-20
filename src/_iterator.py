@@ -19,7 +19,10 @@ geo2sph = pykonal.transformations.geo2sph
 sph2geo = pykonal.transformations.sph2geo
 sph2xyz = pykonal.transformations.sph2xyz
 
-RANK = MPI.COMM_WORLD.Get_rank()
+COMM       = MPI.COMM_WORLD
+RANK       = COMM.Get_rank()
+WORLD_SIZE = COMM.Get_size()
+ROOT_RANK  = _constants.ROOT_RANK
 
 
 class InversionIterator(object):
@@ -32,8 +35,8 @@ class InversionIterator(object):
         self._argc = argc
         self._arrivals = None
         self._cfg = None
-        self._comm = MPI.COMM_WORLD
         self._events = None
+        self._iiter = 0
         self._projection_matrix = None
         self._pwave_model = None
         self._swave_model = None
@@ -41,21 +44,15 @@ class InversionIterator(object):
         self._swave_realization_stack = None
         self._pwave_variance = None
         self._swave_variance = None
-        self._rank = self._comm.Get_rank()
         self._residuals = None
         self._sensitivity_matrix = None
         self._stations = None
         self._sampled_arrivals = None
         self._voronoi_cells = None
-        self._world_size = self._comm.Get_size()
 
     @property
     def argc(self):
         return (self._argc)
-
-    @property
-    def comm(self):
-        return (self._comm)
 
     @property
     def arrivals(self):
@@ -80,6 +77,14 @@ class InversionIterator(object):
     @events.setter
     def events(self, value):
         self._events = value
+
+    @property
+    def iiter(self):
+        return (self._iiter)
+
+    @iiter.setter
+    def iiter(self, value):
+        self._iiter = value
 
     @property
     def projection_matrix(self):
@@ -109,15 +114,9 @@ class InversionIterator(object):
 
     @property
     def pwave_variance(self):
-        return (self._pwave_variance)
-
-    @pwave_variance.setter
-    def pwave_variance(self, value):
-        self._pwave_variance = value
-
-    @property
-    def rank(self):
-        return (self._rank)
+        stack = np.stack(self.pwave_realization_stack)
+        var = np.var(stack, axis=0)
+        return (var)
 
     @property
     def residuals(self):
@@ -171,11 +170,9 @@ class InversionIterator(object):
 
     @property
     def swave_variance(self):
-        return (self._swave_variance)
-
-    @swave_variance.setter
-    def swave_variance(self, value):
-        self._swave_variance = value
+        stack = np.stack(self.swave_realization_stack)
+        var = np.var(stack, axis=0)
+        return (var)
 
     @property
     def voronoi_cells(self):
@@ -184,10 +181,6 @@ class InversionIterator(object):
     @voronoi_cells.setter
     def voronoi_cells(self, value):
         self._voronoi_cells = value
-
-    @property
-    def world_size(self):
-        return (self._world_size)
 
 
     @_utilities.log_errors(logger)
@@ -200,7 +193,7 @@ class InversionIterator(object):
         Only the root rank performs this operation.
         """
 
-        logger.debug(f"Computing {phase}-wave model update")
+        logger.info(f"Computing {phase}-wave model update")
 
         if phase == "P":
             model = self.pwave_model
@@ -255,16 +248,15 @@ class InversionIterator(object):
 
         arrivals = arrivals.sort_index()
 
-        root = _constants.ROOT_RANK
-        if self.rank == root:
+        if RANK == ROOT_RANK:
             ids = arrivals.index.unique()
             self._dispatch(ids)
 
             logger.debug("Compiling sensitivity matrix.")
-            column_idxs = self.comm.gather(None, root=root)
-            nsegments = self.comm.gather(None, root=root)
-            nonzero_values = self.comm.gather(None, root=root)
-            residuals = self.comm.gather(None, root=root)
+            column_idxs = COMM.gather(None, root=ROOT_RANK)
+            nsegments = COMM.gather(None, root=ROOT_RANK)
+            nonzero_values = COMM.gather(None, root=ROOT_RANK)
+            residuals = COMM.gather(None, root=ROOT_RANK)
 
             column_idxs = list(filter(lambda x: x is not None, column_idxs))
             nsegments = list(filter(lambda x: x is not None, nsegments))
@@ -308,10 +300,10 @@ class InversionIterator(object):
                 if item is None:
                     logger.debug("Sentinel received. Gathering sensitivity matrix.")
 
-                    column_idxs = self.comm.gather(column_idxs, root=root)
-                    nsegments = self.comm.gather(nsegments, root=root)
-                    nonzero_values = self.comm.gather(nonzero_values, root=root)
-                    residuals = self.comm.gather(residuals, root=root)
+                    column_idxs = COMM.gather(column_idxs, root=ROOT_RANK)
+                    nsegments = COMM.gather(nsegments, root=ROOT_RANK)
+                    nonzero_values = COMM.gather(nonzero_values, root=ROOT_RANK)
+                    residuals = COMM.gather(residuals, root=ROOT_RANK)
 
                     break
 
@@ -336,17 +328,13 @@ class InversionIterator(object):
                     event_coords = event[["latitude", "longitude", "depth"]]
                     event_coords = geo2sph(event_coords)
                     raypath = solver.trace_ray(event_coords)
-                    logger.debug(
-                            f"Successfully traced {phase}-wave ray path for "
-                            f"{network}.{station} event ID #{event_id}"
-                    )
                     _column_idxs, counts = self._projected_ray_idxs(raypath)
                     column_idxs = np.append(column_idxs, _column_idxs)
                     nsegments = np.append(nsegments, len(_column_idxs))
                     nonzero_values = np.append(nonzero_values, counts * step_size)
                     residuals = np.append(residuals, arrival["residual"])
 
-        self.comm.barrier()
+        COMM.barrier()
 
         return (True)
 
@@ -360,22 +348,22 @@ class InversionIterator(object):
         logger.debug("Dispatching ids")
 
         for _id in ids:
-            requesting_rank = self.comm.recv(
+            requesting_rank = COMM.recv(
                 source=MPI.ANY_SOURCE,
                 tag=_constants.DISPATCH_REQUEST_TAG
             )
-            self.comm.send(
+            COMM.send(
                 _id,
                 dest=requesting_rank,
                 tag=_constants.DISPATCH_TRANSMISSION_TAG
             )
         # Distribute sentinel.
-        for irank in range(self.world_size - 1):
-            requesting_rank = self.comm.recv(
+        for irank in range(WORLD_SIZE - 1):
+            requesting_rank = COMM.recv(
                 source=MPI.ANY_SOURCE,
                 tag=_constants.DISPATCH_REQUEST_TAG
             )
-            self.comm.send(
+            COMM.send(
                 sentinel,
                 dest=requesting_rank,
                 tag=_constants.DISPATCH_TRANSMISSION_TAG
@@ -390,7 +378,7 @@ class InversionIterator(object):
         Generate randomly distributed voronoi cells.
         """
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
             min_coords = self.pwave_model.min_coords
             max_coords = self.pwave_model.max_coords
             delta = (max_coords - min_coords)
@@ -424,13 +412,13 @@ class InversionIterator(object):
         """
         Request, receive, and return item from dispatcher.
         """
-        self.comm.send(
-            self.rank,
-            dest=_constants.ROOT_RANK,
+        COMM.send(
+            RANK,
+            dest=ROOT_RANK,
             tag=_constants.DISPATCH_REQUEST_TAG
         )
-        item = self.comm.recv(
-            source=_constants.ROOT_RANK,
+        item = COMM.recv(
+            source=ROOT_RANK,
             tag=_constants.DISPATCH_TRANSMISSION_TAG
         )
 
@@ -443,7 +431,7 @@ class InversionIterator(object):
         "sampled_arrivals" attribute.
         """
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
             narrival = self.cfg["algorithm"]["narrival"]
             tukey_k = self.cfg["algorithm"]["outlier_removal_factor"]
 
@@ -479,7 +467,7 @@ class InversionIterator(object):
 
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
             voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
             tree = scipy.spatial.cKDTree(voronoi_cells)
             nodes = self.pwave_model.nodes.reshape(-1, 3)
@@ -509,50 +497,51 @@ class InversionIterator(object):
         logger.info("Computing traveltime-lookup tables.")
 
         traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
-        if self.rank == _constants.ROOT_RANK:
+
+        if RANK == ROOT_RANK:
+
             os.makedirs(traveltime_dir, exist_ok=True)
             ids = zip(self.stations["network"], self.stations["station"])
             self._dispatch(sorted(ids))
 
-            return (True)
+        else:
 
-        geometry = self.stations
-        geometry = geometry.set_index(["network", "station"])
+            geometry = self.stations
+            geometry = geometry.set_index(["network", "station"])
 
-        while True:
+            while True:
 
-            # Request an event
-            item = self._request_dispatch()
+                # Request an event
+                item = self._request_dispatch()
 
-            if item is None:
-                logger.debug("Received sentinel.")
+                if item is None:
+                    logger.debug("Received sentinel.")
 
-                return (True)
+                    break
 
-            network, station = item
-            logger.debug(f"Received {item}")
+                network, station = item
 
-            keys = ["latitude", "longitude", "depth"]
-            coords = geometry.loc[(network, station), keys]
-            coords = geo2sph(coords)
+                keys = ["latitude", "longitude", "depth"]
+                coords = geometry.loc[(network, station), keys]
+                coords = geo2sph(coords)
 
-            for phase, model in (("P", self.pwave_model), ("S", self.swave_model)):
-                solver = PointSourceSolver(coord_sys="spherical")
-                solver.vv.min_coords = model.min_coords
-                solver.vv.node_intervals = model.node_intervals
-                solver.vv.npts = model.npts
-                solver.vv.values = model.values
-                solver.src_loc = coords
-                solver.solve()
-                path = os.path.join(
-                    traveltime_dir,
-                    f"{network}.{station}.{phase}.npz"
-                )
-                solver.tt.savez(path)
-                logger.debug(
-                    f"Finshed computing {phase}-wave traveltime-lookuptables for"
-                    f" {network}.{station}"
-                )
+                for phase, model in (("P", self.pwave_model), ("S", self.swave_model)):
+                    solver = PointSourceSolver(coord_sys="spherical")
+                    solver.vv.min_coords = model.min_coords
+                    solver.vv.node_intervals = model.node_intervals
+                    solver.vv.npts = model.npts
+                    solver.vv.values = model.values
+                    solver.src_loc = coords
+                    solver.solve()
+                    path = os.path.join(
+                        traveltime_dir,
+                        f"{network}.{station}.{phase}.npz"
+                    )
+                    solver.tt.savez(path)
+
+        COMM.barrier()
+
+        return (True)
 
 
     @_utilities.log_errors(logger)
@@ -562,9 +551,14 @@ class InversionIterator(object):
         updating velocity models, event locations, and arrival residuals.
         """
 
-        logger.info("Iterating inversion procedure.")
-
+        niter = self.cfg["algorithm"]["niter"]
         nreal = self.cfg["algorithm"]["nreal"]
+        output_dir = self.cfg["workspace"]["output_dir"]
+
+        self.iiter += 1
+
+        logger.info(f"Iteration #{self.iiter} (/{niter}).")
+
         for phase in ("P", "S"):
             logger.info(f"Updating {phase}-wave model")
             for ireal in range(nreal):
@@ -578,6 +572,7 @@ class InversionIterator(object):
         self.compute_traveltime_lookup_tables()
         self.relocate_events()
         self.update_arrival_residuals()
+        self.save(output_dir)
 
 
     @_utilities.log_errors(logger)
@@ -591,7 +586,7 @@ class InversionIterator(object):
 
         logger.info("Loading configuration-file parameters.")
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
 
             # Parse configuration-file parameters.
             self.cfg = _utilities.parse_cfg(self.argc.configuration_file)
@@ -612,7 +607,7 @@ class InversionIterator(object):
 
         logger.info("Loading event data.")
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
 
             # Parse event data.
             data = _dataio.parse_event_data(self.argc)
@@ -634,7 +629,7 @@ class InversionIterator(object):
 
         logger.info("Loading network geometry")
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
 
             # Parse event data.
             stations = _dataio.parse_network_geometry(self.argc)
@@ -656,7 +651,7 @@ class InversionIterator(object):
 
         logger.info("Loading velocity models.")
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
 
             # Parse velocity model files.
             velocity_models = _dataio.parse_velocity_models(self.cfg)
@@ -676,13 +671,13 @@ class InversionIterator(object):
         logger.info("Relocating events.")
 
         traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
             ids = self.events["event_id"]
             self._dispatch(sorted(ids))
 
             logger.debug("Dispatch complete. Gathering events.")
             # Gather and concatenate events from all workers.
-            events = self.comm.gather(None, root=_constants.ROOT_RANK)
+            events = COMM.gather(None, root=ROOT_RANK)
             events = pd.concat(events, ignore_index=True)
             events = events.convert_dtypes()
             self.events = events
@@ -725,7 +720,7 @@ class InversionIterator(object):
 
                 if event_id is None:
                     logger.debug("Received sentinel, gathering events.")
-                    self.comm.gather(events, root=_constants.ROOT_RANK)
+                    COMM.gather(events, root=ROOT_RANK)
 
                     break
 
@@ -761,7 +756,7 @@ class InversionIterator(object):
 
         logger.info("Sanitizing data.")
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
 
             # Drop duplicate stations.
             self.stations = self.stations.drop_duplicates(["network", "station"])
@@ -782,7 +777,7 @@ class InversionIterator(object):
 
     @_utilities.log_errors(logger)
     @_utilities.root_only(RANK)
-    def save(self, path):
+    def save(self, output_dir):
         """
         Save the current "events", "arrivals", "pwave_model",
         "pwave_realization_stack", "pwave_variance", "swave_model",
@@ -793,21 +788,42 @@ class InversionIterator(object):
         are written to a NPZ file with handles "pwave_model",
         "swave_model", "pwave_stack", "swave_stack".
         """
-        pwave_stack = np.stack(self.pwave_realization_stack)
-        swave_stack = np.stack(self.swave_realization_stack)
 
-        np.savez(
-            f"{path}.model.npz",
-            pwave_model=self.pwave_model,
-            pwave_stack=pwave_stack,
-            pwave_variance=self.pwave_variance,
-            swave_model=self.swave_model,
-            swave_stack=swave_stack,
-            swave_variance=swave_variance,
-            min_coords=pwave_model.min_coords,
-            node_intervals=pwave_model.node_intervals,
-            npts=pwave_model.npts
-        )
+        logger.info(f"Saving data from iteration #{self.iiter}")
+
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, f"{self.iiter:02d}")
+
+        if self.iiter > 0:
+            pwave_stack = np.stack(self.pwave_realization_stack)
+            swave_stack = np.stack(self.pwave_realization_stack)
+            np.savez(
+                f"{path}.model.npz",
+                pwave_model=self.pwave_model.values,
+                pwave_stack=pwave_stack,
+                pwave_variance=self.pwave_variance,
+                swave_model=self.swave_model.values,
+                swave_stack=swave_stack,
+                swave_variance=self.swave_variance,
+                min_coords=self.pwave_model.min_coords,
+                node_intervals=self.pwave_model.node_intervals,
+                npts=self.pwave_model.npts
+            )
+
+        events       = self.events
+        EVENT_DTYPES = _constants.EVENT_DTYPES
+        for column in EVENT_DTYPES:
+            events[column] = events[column].astype(EVENT_DTYPES[column])
+
+        arrivals       = self.arrivals
+        ARRIVAL_DTYPES = _constants.ARRIVAL_DTYPES
+        for column in ARRIVAL_DTYPES:
+            arrivals[column] = arrivals[column].astype(ARRIVAL_DTYPES[column])
+
+        events.to_hdf(f"{path}.events.h5", key="events")
+        arrivals.to_hdf(f"{path}.events.h5", key="arrivals")
+
+        return(True)
 
 
 
@@ -819,7 +835,6 @@ class InversionIterator(object):
         "attrs" may be an iterable of attribute names to synchronize.
         """
 
-        logger.debug(f"Synchronizing attributes: {attrs}")
 
         _all = (
             "arrivals",
@@ -833,15 +848,15 @@ class InversionIterator(object):
             "voronoi_cells"
         )
 
-        root = _constants.ROOT_RANK
-
         if attrs == "all":
             attrs = _all
 
         for attr in attrs:
-            value = getattr(self, attr) if self.rank == root else None
-            value = self.comm.bcast(value, root=root)
+            value = getattr(self, attr) if RANK == ROOT_RANK else None
+            value = COMM.bcast(value, root=ROOT_RANK)
             setattr(self, attr, value)
+
+        COMM.barrier()
 
         return (True)
 
@@ -860,11 +875,11 @@ class InversionIterator(object):
         arrivals = self.arrivals.set_index(["network", "station", "phase"])
         arrivals = arrivals.sort_index()
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
             ids = arrivals.index.unique()
             self._dispatch(ids)
             logger.debug("Dispatch complete. Gathering arrivals.")
-            arrivals = self.comm.gather(None, root=_constants.ROOT_RANK)
+            arrivals = COMM.gather(None, root=ROOT_RANK)
             arrivals = pd.concat(arrivals, ignore_index=True)
             arrivals = arrivals.convert_dtypes()
             self.arrivals = arrivals
@@ -881,7 +896,7 @@ class InversionIterator(object):
 
                 if item is None:
                     logger.debug("Received sentinel. Gathering arrivals.")
-                    self.comm.gather(updated_arrivals, root=_constants.ROOT_RANK)
+                    COMM.gather(updated_arrivals, root=ROOT_RANK)
 
                     break
 
@@ -923,22 +938,14 @@ class InversionIterator(object):
         appropriate attributes.
         """
 
-        if self.rank == _constants.ROOT_RANK:
+        if RANK == ROOT_RANK:
             stack = np.stack(self.pwave_realization_stack)
             self.pwave_model.values = np.mean(stack, axis=0)
-            self.pwave_variance = np.var(stack, axis=0)
 
             stack = np.stack(self.swave_realization_stack)
             self.swave_model.values = np.mean(stack, axis=0)
-            self.swave_variance = np.var(stack, axis=0)
 
-        attrs = [
-            "pwave_model",
-            "pwave_variance",
-            "swave_model",
-            "swave_variance"
-        ]
-        self.synchronize(attrs=attrs)
+        self.synchronize(attrs=["pwave_model", "swave_model"])
 
         return (True)
 
