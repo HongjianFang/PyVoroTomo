@@ -1,6 +1,8 @@
 """
 An MPI script to invert traveltime data for velocity.
 
+This version works with PyKonal v0.2.1b0
+
 .. author:: Malcolm C. A. White
 .. date:: 2020-04-17
 """
