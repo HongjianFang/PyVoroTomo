@@ -183,42 +183,6 @@ def parse_cfg(configuration_file):
     cfg["algorithm"] = _cfg
 
     _cfg = dict()
-    _cfg["lat_min"] = parser.getfloat(
-        "model",
-        "lat_min"
-    )
-    _cfg["lon_min"] = parser.getfloat(
-        "model",
-        "lon_min"
-    )
-    _cfg["depth_min"] = parser.getfloat(
-        "model",
-        "depth_min"
-    )
-    _cfg["nlat"] = parser.getint(
-        "model",
-        "nlat"
-    )
-    _cfg["nlon"] = parser.getint(
-        "model",
-        "nlon"
-    )
-    _cfg["ndepth"] = parser.getint(
-        "model",
-        "ndepth"
-    )
-    _cfg["dlat"] = parser.getfloat(
-        "model",
-        "dlat"
-    )
-    _cfg["dlon"] = parser.getfloat(
-        "model",
-        "dlon"
-    )
-    _cfg["ddepth"] = parser.getfloat(
-        "model",
-        "ddepth"
-    )
     _cfg["initial_pwave_path"] = parser.get(
         "model",
         "initial_pwave_path"

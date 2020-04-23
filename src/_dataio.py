@@ -7,6 +7,7 @@ A module defining basic I/O functions.
 
 import numpy as np
 import pandas as pd
+import pykonal
 
 import _constants
 import _picklable
@@ -64,47 +65,22 @@ def parse_velocity_models(cfg):
     the second is the S-wave model.
     """
 
-    lat_min = cfg["model"]["lat_min"]
-    lon_min = cfg["model"]["lon_min"]
-    depth_min = cfg["model"]["depth_min"]
-    nlat = cfg["model"]["nlat"]
-    nlon = cfg["model"]["nlon"]
-    ndepth = cfg["model"]["ndepth"]
-    dlat = cfg["model"]["dlat"]
-    dlon = cfg["model"]["dlon"]
-    ddepth = cfg["model"]["ddepth"]
-
-    lat_max = lat_min  +  (nlat - 1) * dlat
-    depth_max = depth_min  +  (ndepth - 1) * ddepth
-    theta_min = np.radians(90 - lat_max)
-    phi_min = np.radians(lon_min)
-    rho_min = _constants.EARTH_RADIUS - depth_max
-    ntheta = nlat
-    nphi = nlon
-    nrho = ndepth
-    dtheta = np.radians(dlat)
-    dphi = np.radians(dlon)
-    drho = ddepth
-
     pwave_model = _picklable.ScalarField3D(coord_sys="spherical")
     swave_model = _picklable.ScalarField3D(coord_sys="spherical")
 
-    for model in (pwave_model, swave_model):
-        model.min_coords = rho_min, theta_min, phi_min
-        model.node_intervals = drho, dtheta, dphi
-        model.npts = nrho, ntheta, nphi
 
-    with np.load(cfg["model"]["initial_pwave_path"]) as npz:
-        vp = npz["velocity"]
-    with np.load(cfg["model"]["initial_swave_path"]) as npz:
-        vs = npz["velocity"]
+    path = cfg["model"]["initial_pwave_path"]
+    _pwave_model = pykonal.fields.load(path)
 
-    vp = np.rollaxis(vp,  2)
-    vs = np.rollaxis(vs,  2)
-    vp = np.flip(vp, axis=(0, 1))
-    vs = np.flip(vs, axis=(0, 1))
+    path = cfg["model"]["initial_swave_path"]
+    _swave_model = pykonal.fields.load(path)
 
-    pwave_model.values = vp
-    swave_model.values = vs
+    models  = (pwave_model, swave_model)
+    _models = (_pwave_model, _swave_model)
+    for model, _model in zip(models, _models):
+        model.min_coords = _model.min_coords
+        model.node_intervals = _model.node_intervals
+        model.npts = _model.npts
+        model.values = _model.values
 
     return (pwave_model, swave_model)
