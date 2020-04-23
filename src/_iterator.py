@@ -795,14 +795,14 @@ class InversionIterator(object):
         path = os.path.join(output_dir, f"{self.iiter:02d}")
 
         if self.iiter > 0:
+            self.pwave_model.savez(path + ".pwave_model")
+            self.swave_model.savez(path + ".swave_model")
             pwave_stack = np.stack(self.pwave_realization_stack)
             swave_stack = np.stack(self.pwave_realization_stack)
             np.savez(
-                f"{path}.model.npz",
-                pwave_model=self.pwave_model.values,
+                f"{path}.realizations.npz",
                 pwave_stack=pwave_stack,
                 pwave_variance=self.pwave_variance,
-                swave_model=self.swave_model.values,
                 swave_stack=swave_stack,
                 swave_variance=self.swave_variance,
                 min_coords=self.pwave_model.min_coords,
