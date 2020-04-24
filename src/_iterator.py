@@ -316,18 +316,13 @@ class InversionIterator(object):
                 # Initialize the ray tracer.
                 path = os.path.join(traveltime_dir, f"{network}.{station}.{phase}.npz")
                 traveltime = pykonal.fields.load(path)
-                solver = pykonal.EikonalSolver(coord_sys="spherical")
-                solver.vv.min_coords = traveltime.min_coords
-                solver.vv.node_intervals = traveltime.node_intervals
-                solver.vv.npts = traveltime.npts
-                solver.tt.values = traveltime.values
-                step_size = solver.step_size
+                step_size = traveltime.step_size
 
                 for event_id, arrival in _arrivals.iterrows():
                     event = events.loc[event_id]
                     event_coords = event[["latitude", "longitude", "depth"]]
                     event_coords = geo2sph(event_coords)
-                    raypath = solver.trace_ray(event_coords)
+                    raypath = traveltime.trace_ray(event_coords)
                     _column_idxs, counts = self._projected_ray_idxs(raypath)
                     column_idxs = np.append(column_idxs, _column_idxs)
                     nsegments = np.append(nsegments, len(_column_idxs))
