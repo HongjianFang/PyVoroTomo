@@ -368,18 +368,59 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self):
+    def _generate_voronoi_cells(self, phase):
         """
-        Generate randomly distributed voronoi cells.
+        Generate Voronoi cells.
         """
 
         if RANK == ROOT_RANK:
-            min_coords = self.pwave_model.min_coords
-            max_coords = self.pwave_model.max_coords
-            delta = (max_coords - min_coords)
+
             nvoronoi = self.cfg["algorithm"]["nvoronoi"]
-            cells = np.random.rand(nvoronoi, 3) * delta + min_coords
-            self.voronoi_cells = cells
+            arrivals = self.sampled_arrivals.sample(n=nvoronoi)
+            arrivals = arrivals.set_index(["network", "station"])
+            arrivals = arrivals.sort_index()
+            index = arrivals.index.unique()
+            event_ids = [tuple(arrivals.loc[idx, "event_id"].values) for idx in index]
+            items = zip(index, event_ids)
+            self._dispatch(items)
+
+            voronoi_cells = COMM.gather(None, root=ROOT_RANK)
+            voronoi_cells = filter(lambda item: item is not None, voronoi_cells)
+            voronoi_cells = sum(voronoi_cells, [])
+            voronoi_cells = np.stack(voronoi_cells)
+            self.voronoi_cells = voronoi_cells
+
+        else:
+
+            traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
+            events = self.events
+            events = events.set_index("event_id")
+
+            voronoi_cells = []
+
+            while True:
+
+                item = self._request_dispatch()
+
+                if item is None:
+                    COMM.gather(voronoi_cells, root=ROOT_RANK)
+                    break
+
+                (network, station), event_ids = item
+
+                filename = f"{network}.{station}.{phase}.npz"
+                path = os.path.join(traveltime_dir, filename)
+                traveltime = pykonal.fields.load(path)
+
+                for event_id in event_ids:
+                    keys = ["latitude", "longitude", "depth"]
+                    coords = events.loc[event_id, keys]
+                    coords = geo2sph(coords)
+                    raypath = traveltime.trace_ray(coords)
+                    idx = np.random.choice(range(len(raypath)))
+                    coords = raypath[idx]
+                    coords = sph2geo(coords)
+                    voronoi_cells.append(coords)
 
         self.synchronize(attrs=["voronoi_cells"])
 
@@ -559,7 +600,7 @@ class InversionIterator(object):
             for ireal in range(nreal):
                 logger.info(f"Realization #{ireal+1} (/{nreal})")
                 self._sample_arrivals(phase)
-                self._generate_voronoi_cells()
+                self._generate_voronoi_cells(phase)
                 self._update_projection_matrix()
                 self._compute_sensitivity_matrix(phase)
                 self._compute_model_update(phase)
