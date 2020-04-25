@@ -621,6 +621,7 @@ class InversionIterator(object):
         niter = self.cfg["algorithm"]["niter"]
         nreal = self.cfg["algorithm"]["nreal"]
         output_dir = self.cfg["workspace"]["output_dir"]
+        adaptive_voronoi = self.cfg["algorithm"]["adaptive_voronoi_cells"]
 
         self.iiter += 1
 
@@ -631,7 +632,10 @@ class InversionIterator(object):
             for ireal in range(nreal):
                 logger.info(f"Realization #{ireal+1} (/{nreal})")
                 self._sample_arrivals(phase)
-                self._generate_voronoi_cells()
+                self._generate_voronoi_cells(
+                    adaptive=adaptive_voronoi,
+                    phase=phase
+                )
                 self._update_projection_matrix()
                 self._compute_sensitivity_matrix(phase)
                 self._compute_model_update(phase)
