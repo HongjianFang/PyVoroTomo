@@ -368,9 +368,40 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, phase):
+    def _generate_voronoi_cells(self, adaptive=False, phase=None):
         """
         Generate Voronoi cells.
+        """
+
+        if adaptive is False:
+            self._generate_voronoi_cells_random()
+        else:
+            self._generate_voronoi_cells_adaptive(phase)
+
+
+    @_utilities.log_errors(logger)
+    def _generate_voronoi_cells_random(self):
+        """
+        Generate randomly distributed Voronoi cells.
+        """
+
+        if RANK == ROOT_RANK:
+            min_coords = self.pwave_model.min_coords
+            max_coords = self.pwave_model.max_coords
+            delta = (max_coords - min_coords)
+            nvoronoi = self.cfg["algorithm"]["nvoronoi"]
+            cells = np.random.rand(nvoronoi, 3) * delta + min_coords
+            self.voronoi_cells = cells
+
+        self.synchronize(attrs=["voronoi_cells"])
+
+        return (True)
+
+
+    @_utilities.log_errors(logger)
+    def _generate_voronoi_cells_adaptive(self, phase):
+        """
+        Generate Voronoi cells adaptively.
         """
 
         if RANK == ROOT_RANK:
@@ -600,7 +631,7 @@ class InversionIterator(object):
             for ireal in range(nreal):
                 logger.info(f"Realization #{ireal+1} (/{nreal})")
                 self._sample_arrivals(phase)
-                self._generate_voronoi_cells(phase)
+                self._generate_voronoi_cells()
                 self._update_projection_matrix()
                 self._compute_sensitivity_matrix(phase)
                 self._compute_model_update(phase)
