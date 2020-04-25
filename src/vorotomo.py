@@ -1,11 +1,19 @@
 """
 An MPI script to invert traveltime data for velocity.
 
-This version works with PyKonal v0.2.1b0
-
 .. author:: Malcolm C. A. White
 .. date:: 2020-04-17
 """
+
+import pykonal
+
+try:
+    version_number = pykonal.__version_number__
+    if version_number != "0.2.3":
+        raise (ValueError())
+except:
+    print("Invalid version of PyKonal detected. Version 0.2.3 required.")
+    exit(-1)
 
 import signal
 
