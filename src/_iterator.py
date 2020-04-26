@@ -450,7 +450,6 @@ class InversionIterator(object):
                     raypath = traveltime.trace_ray(coords)
                     idx = np.random.choice(range(len(raypath)))
                     coords = raypath[idx]
-                    coords = sph2geo(coords)
                     voronoi_cells.append(coords)
 
         self.synchronize(attrs=["voronoi_cells"])
