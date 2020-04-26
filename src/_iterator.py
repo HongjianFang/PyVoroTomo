@@ -316,6 +316,10 @@ class InversionIterator(object):
                 # Initialize the ray tracer.
                 path = os.path.join(traveltime_dir, f"{network}.{station}.{phase}.npz")
                 traveltime = pykonal.fields.load(path)
+
+                # Load velocity model for calculating dt/dx
+                vel = pykonal.fields.load(vel)
+
                 step_size = traveltime.step_size
 
                 for event_id, arrival in _arrivals.iterrows():
@@ -323,10 +327,16 @@ class InversionIterator(object):
                     event_coords = event[["latitude", "longitude", "depth"]]
                     event_coords = geo2sph(event_coords)
                     raypath = traveltime.trace_ray(event_coords)
-                    _column_idxs, counts = self._projected_ray_idxs(raypath)
-                    column_idxs = np.append(column_idxs, _column_idxs)
-                    nsegments = np.append(nsegments, len(_column_idxs))
-                    nonzero_values = np.append(nonzero_values, counts * step_size)
+                    if vel_invert: # For velocity inversion
+                        _column_idxs, counts = self._projected_ray_idxs(raypath)
+                        nonzero_values = np.append(nonzero_values, counts * step_size)
+                        column_idxs = np.append(column_idxs, _column_idxs)
+                        nsegments = np.append(nsegments, len(_column_idxs))
+                    else: # For hypocenter inversion
+                        _column_idxs, _nonnzero_values = self._calculate_hypo_sensitivity(event_id,event_coords,raypath,vel)
+                        column_idxs = np.append(column_idxs, _column_idxs)
+                        nonzero_values = np.append(nonzero_values,_nonnzero_values)
+                        nsegments = np.append(nsegments, len(_column_idxs))
                     residuals = np.append(residuals, arrival["residual"])
 
         COMM.barrier()
@@ -472,6 +482,28 @@ class InversionIterator(object):
 
         return (column_idxs, counts)
 
+    def _calculate_hypo_sensitivity(event_id,event_coords,raypath,vel):
+        '''
+        Retrun the column index and direvitive of data residual w.r.t hypocenter
+        '''
+        #raypath, 3D array (rad,lon,lat) with lat and lon in rad
+        dpos = np.zeros(4,)
+        # raypath from station to event
+        dpos[0] = raypath[-1,0]-raypath[-2,0]
+        dpos[1] = raypath[-1,0]*(raypath[-1,1]-raypath[-2,1])
+        dpos[2] = raypath[-1,0]*(raypath[-1,2]-raypath[-2,2])*np.cos(raypath[-1,1])
+
+        # this is a unit vector point to the direction of the ray path (first two points in a ray)
+        dpos = dpos/np.sqrt(np.sum(dpos**2))
+        # interpolate velocity model to the hypocenter point (rad0,lon0,lat0)
+        # using pykonal here? vel 
+        vel_hypo = interpolate(vel,event_coords)
+        dtdx = np.zeros(4,)
+        # the derivative is just the projection of slowness to different direction
+        dtdx[:-1] = dpos/vel_hypo
+        dtdx[-1] = -1.0
+        column_id = np.arange(event_id*4,event_id*4+4)
+        return column_id,dtdx
 
     @_utilities.log_errors(logger)
     def _request_dispatch(self):
