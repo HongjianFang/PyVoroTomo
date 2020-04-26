@@ -152,6 +152,11 @@ def parse_cfg(configuration_file):
         "algorithm",
         "nvoronoi"
     )
+    _cfg["adaptive_voronoi_cells"] = parser.getboolean(
+        "algorithm",
+        "adaptive_voronoi_cells",
+        fallback=False
+    )
     _cfg["narrival"] = parser.getint(
         "algorithm",
         "narrival"
