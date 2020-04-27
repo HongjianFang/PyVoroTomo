@@ -155,11 +155,20 @@ def parse_cfg(configuration_file):
     _cfg["adaptive_voronoi_cells"] = parser.getboolean(
         "algorithm",
         "adaptive_voronoi_cells",
-        fallback=False
+        fallback=True
     )
     _cfg["narrival"] = parser.getint(
         "algorithm",
         "narrival"
+    )
+    _cfg["homogenize_raypaths"] = parser.getboolean(
+        "algorithm",
+        "homogenize_raypaths",
+        fallback=True
+    )
+    _cfg["n_raypath_bins"] = parser.getint(
+        "algorithm",
+        "n_raypath_bins"
     )
     _cfg["outlier_removal_factor"] = parser.getfloat(
         "algorithm",

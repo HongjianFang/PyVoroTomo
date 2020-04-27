@@ -490,15 +490,15 @@ class InversionIterator(object):
 
         return (item)
 
+
     @_utilities.log_errors(logger)
-    def _sample_arrivals(self, phase):
+    def _sample_arrivals(self, phase, weighted=True):
         """
         Draw a random sample of arrivals and update the
         "sampled_arrivals" attribute.
         """
 
         if RANK == ROOT_RANK:
-            narrival = self.cfg["algorithm"]["narrival"]
             tukey_k = self.cfg["algorithm"]["outlier_removal_factor"]
 
             # Subset for the appropriate phase.
@@ -507,20 +507,106 @@ class InversionIterator(object):
             arrivals = arrivals.loc[phase]
 
             # Remove outliers.
-            q1, q3 = arrivals["residual"].quantile(q=[0.25, 0.75])
-            iqr = q3 - q1
-            min_residual = q1 - tukey_k * iqr
-            max_residual = q3 + tukey_k * iqr
-            arrivals = arrivals[
-                 (arrivals["residual"] > min_residual)
-                &(arrivals["residual"] < max_residual)
-            ]
+            arrivals = remove_outliers(arrivals, tukey_k, "residual")
 
-            self.sampled_arrivals = arrivals.sample(n=narrival)
+            if weighted is True:
+                arrivals = self._sample_arrivals_weighted(arrivals)
+            else:
+                narrival = self.cfg["algorithm"]["narrival"]
+                arrivals = self.arrivals.sample(n=narrival)
+
+            self.sampled_arrivals = arrivals
 
         self.synchronize(attrs=["sampled_arrivals"])
 
         return (True)
+
+
+
+    @_utilities.log_errors(logger)
+    def _sample_arrivals_weighted(self, arrivals):
+        """
+        Draw a random sample of arrivals and update the
+        "sampled_arrivals" attribute.
+        """
+
+        logger.debug("Homogenizing raypaths.")
+
+        nbins = self.cfg["algorithm"]["n_raypath_bins"]
+        narrival = self.cfg["algorithm"]["narrival"]
+
+        columns = [
+            "network",
+            "station",
+            "latitude",
+            "longitude",
+            "depth"
+        ]
+        stations = self.stations[columns]
+        stations = stations.rename(
+            columns={
+                "latitude": "station_latitude",
+                "longitude": "station_longitude",
+                "depth": "station_depth"
+            }
+        )
+
+        columns = [
+            "latitude",
+            "longitude",
+            "depth",
+            "event_id"
+        ]
+        events = self.events[columns]
+        events = events.rename(
+            columns={
+                "latitude": "event_latitude",
+                "longitude": "event_longitude",
+                "depth": "event_depth"
+            }
+        )
+
+        columns = [
+            "event_id",
+            "network",
+            "station",
+            "time",
+            "residual"
+        ]
+        arrivals = arrivals[columns]
+        arrivals = arrivals.merge(events, on="event_id")
+        arrivals = arrivals.merge(stations, on=["network", "station"])
+
+        columns = [
+            "event_latitude",
+            "event_longitude",
+            "event_depth",
+            "station_latitude",
+            "station_longitude",
+            "station_depth"
+        ]
+        idxs = []
+        for column in columns:
+            values = arrivals[column].values
+            bins = np.linspace(np.min(values), np.max(values), nbins)
+            idxs.append(np.digitize(values, bins))
+        arrivals["path_id"] = list(zip(*idxs))
+        arrivals = arrivals.sort_values("path_id")
+        value_counts = arrivals["path_id"].value_counts()
+        arrivals = arrivals.set_index("path_id")
+        arrivals["weight"] = 1 / np.exp(value_counts)
+        arrivals = arrivals.sample(n=narrival, weights="weight")
+        arrivals = arrivals.reset_index(drop=True)
+        columns = [
+            "event_id",
+            "network",
+            "station",
+            "time",
+            "residual"
+        ]
+        arrivals = arrivals[columns]
+
+        return (arrivals)
 
 
     @_utilities.log_errors(logger)
@@ -621,6 +707,7 @@ class InversionIterator(object):
         nreal = self.cfg["algorithm"]["nreal"]
         output_dir = self.cfg["workspace"]["output_dir"]
         adaptive_voronoi = self.cfg["algorithm"]["adaptive_voronoi_cells"]
+        homogenize_raypaths = self.cfg["algorithm"]["homogenize_raypaths"]
 
         self.iiter += 1
 
@@ -630,7 +717,7 @@ class InversionIterator(object):
             logger.info(f"Updating {phase}-wave model")
             for ireal in range(nreal):
                 logger.info(f"Realization #{ireal+1} (/{nreal})")
-                self._sample_arrivals(phase)
+                self._sample_arrivals(phase, weighted=homogenize_raypaths)
                 self._generate_voronoi_cells(
                     adaptive=adaptive_voronoi,
                     phase=phase
@@ -1042,6 +1129,23 @@ def arrival_dict(dataframe, event_id):
     }
 
     return (_arrival_dict)
+
+
+def remove_outliers(dataframe, tukey_k, column):
+    """
+    Return DataFrame with outliers removed using Tukey fences.
+    """
+
+    q1, q3 = dataframe[column].quantile(q=[0.25, 0.75])
+    iqr = q3 - q1
+    vmin = q1 - tukey_k * iqr
+    vmax = q3 + tukey_k * iqr
+    dataframe = dataframe[
+         (dataframe[column] > vmin)
+        &(dataframe[column] < vmax)
+    ]
+
+    return (dataframe)
 
 
 @_utilities.log_errors(logger)
