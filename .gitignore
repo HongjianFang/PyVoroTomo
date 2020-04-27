@@ -1,4 +1,5 @@
+jupyter
 src/__pycache__
 test_data/output
 test_data/traveltimes
-*.log
+vorotomo.log
