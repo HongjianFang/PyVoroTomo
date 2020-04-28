@@ -971,7 +971,7 @@ class InversionIterator(object):
             self.pwave_model.savez(path + ".pwave_model")
             self.swave_model.savez(path + ".swave_model")
             pwave_stack = np.stack(self.pwave_realization_stack)
-            swave_stack = np.stack(self.pwave_realization_stack)
+            swave_stack = np.stack(self.swave_realization_stack)
             np.savez(
                 f"{path}.realizations.npz",
                 pwave_stack=pwave_stack,
