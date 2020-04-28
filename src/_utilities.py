@@ -11,6 +11,7 @@ import configparser
 import logging
 import mpi4py.MPI as MPI
 import signal
+import time
 
 import _constants
 
@@ -107,18 +108,26 @@ def parse_args():
         help="Input network geometry file in HDF5 format."
     )
     parser.add_argument(
+        "-c",
+        "--configuration_file",
+        type=str,
+        default="vorotomo.cfg",
+        help="Configuration file."
+    )
+    parser.add_argument(
         "-l",
         "--log_file",
         type=str,
         default="vorotomo.log",
         help="Log file."
     )
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
     parser.add_argument(
-        "-c",
-        "--configuration_file",
+        "-o",
+        "--output_dir",
         type=str,
-        default="vorotomo.cfg",
-        help="Configuration file."
+        default=f"output_{stamp}",
+        help="Log file."
     )
     parser.add_argument(
         "-v",
@@ -206,17 +215,6 @@ def parse_cfg(configuration_file):
         "initial_swave_path"
     )
     cfg["model"] = _cfg
-
-    _cfg = dict()
-    _cfg["output_dir"] = parser.get(
-        "workspace",
-        "output_dir"
-    )
-    _cfg["traveltime_dir"] = parser.get(
-        "workspace",
-        "traveltime_dir"
-    )
-    cfg["workspace"] = _cfg
 
     _cfg = dict()
     _cfg["dlat"] = parser.getfloat(

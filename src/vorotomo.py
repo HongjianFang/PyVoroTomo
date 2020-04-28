@@ -64,7 +64,7 @@ def main(argc):
     inversion_iterator.update_arrival_residuals()
 
     # Save initial data.
-    output_dir = inversion_iterator.cfg["workspace"]["output_dir"]
+    output_dir = inversion_iterator.argc.output_dir
     inversion_iterator.save(output_dir)
 
     niter = inversion_iterator.cfg["algorithm"]["niter"]

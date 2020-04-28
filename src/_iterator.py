@@ -5,6 +5,7 @@ import pandas as pd
 import pykonal
 import scipy.sparse
 import scipy.spatial
+import tempfile
 
 import _dataio
 import _constants
@@ -49,6 +50,10 @@ class InversionIterator(object):
         self._stations = None
         self._sampled_arrivals = None
         self._voronoi_cells = None
+        if RANK == ROOT_RANK:
+            self._traveltime_dir_obj = tempfile.TemporaryDirectory()
+            self._traveltime_dir = self._traveltime_dir_obj.name
+        self.synchronize(attrs=["traveltime_dir"])
 
     @property
     def argc(self):
@@ -175,6 +180,14 @@ class InversionIterator(object):
         return (var)
 
     @property
+    def traveltime_dir(self):
+        return (self._traveltime_dir)
+
+    @traveltime_dir.setter
+    def traveltime_dir(self, value):
+        self._traveltime_dir = value
+
+    @property
     def voronoi_cells(self):
         return (self._voronoi_cells)
 
@@ -241,7 +254,7 @@ class InversionIterator(object):
         logger.info(f"Computing {phase}-wave sensitivity matrix")
 
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
-        traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
+        traveltime_dir = self.traveltime_dir
 
         index_keys = ["network", "station"]
         arrivals = self.sampled_arrivals.set_index(index_keys)
@@ -423,7 +436,7 @@ class InversionIterator(object):
 
         else:
 
-            traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
+            traveltime_dir = self.traveltime_dir
             events = self.events
             events = events.set_index("event_id")
 
@@ -648,7 +661,9 @@ class InversionIterator(object):
 
         logger.info("Computing traveltime-lookup tables.")
 
-        traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
+        traveltime_dir = self.traveltime_dir
+
+        logger.debug(f"Working in {traveltime_dir}")
 
         if RANK == ROOT_RANK:
 
@@ -705,7 +720,7 @@ class InversionIterator(object):
 
         niter = self.cfg["algorithm"]["niter"]
         nreal = self.cfg["algorithm"]["nreal"]
-        output_dir = self.cfg["workspace"]["output_dir"]
+        output_dir = self.argc.output_dir
         adaptive_voronoi = self.cfg["algorithm"]["adaptive_voronoi_cells"]
         homogenize_raypaths = self.cfg["algorithm"]["homogenize_raypaths"]
 
@@ -827,7 +842,7 @@ class InversionIterator(object):
 
         logger.info("Relocating events.")
 
-        traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
+        traveltime_dir = self.traveltime_dir
         if RANK == ROOT_RANK:
             ids = self.events["event_id"]
             self._dispatch(sorted(ids))
@@ -1028,7 +1043,7 @@ class InversionIterator(object):
 
         logger.info("Updating arrival residuals.")
 
-        traveltime_dir = self.cfg["workspace"]["traveltime_dir"]
+        traveltime_dir = self.traveltime_dir
         arrivals = self.arrivals.set_index(["network", "station", "phase"])
         arrivals = arrivals.sort_index()
 
