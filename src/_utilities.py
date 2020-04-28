@@ -127,7 +127,13 @@ def parse_args():
         "--output_dir",
         type=str,
         default=f"output_{stamp}",
-        help="Log file."
+        help="Output directory."
+    )
+    parser.add_argument(
+        "-s",
+        "--scratch_dir",
+        type=str,
+        help="Scratch directory."
     )
     parser.add_argument(
         "-v",

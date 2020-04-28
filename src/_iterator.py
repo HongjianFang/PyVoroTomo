@@ -51,7 +51,8 @@ class InversionIterator(object):
         self._sampled_arrivals = None
         self._voronoi_cells = None
         if RANK == ROOT_RANK:
-            self._traveltime_dir_obj = tempfile.TemporaryDirectory()
+            scratch_dir = argc.scratch_dir
+            self._traveltime_dir_obj = tempfile.TemporaryDirectory(dir=scratch_dir)
             self._traveltime_dir = self._traveltime_dir_obj.name
         self.synchronize(attrs=["traveltime_dir"])
 
