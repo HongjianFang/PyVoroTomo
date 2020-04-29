@@ -37,7 +37,7 @@ def configure_logger(name, logfile, verbose=False):
     logger = logging.getLogger(name)
     logger.setLevel(level)
     if level == logging.DEBUG:
-        fmt = f"%(asctime)s::%(levelname)s::{name}.%(funcName)s()::%(lineno)d::"\
+        fmt = f"%(asctime)s::%(levelname)s::%(funcName)s()::"\
               f"{processor_name}::{rank:04d}:: %(message)s"
     else:
         fmt = f"%(asctime)s::%(levelname)s::{rank:04d}:: %(message)s"
