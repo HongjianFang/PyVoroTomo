@@ -151,14 +151,18 @@ def parse_args():
         "network",
         "configuration_file",
         "log_file",
-        "output_dir",
-        "scratch_dir"
+        "output_dir"
     ):
         _attr = getattr(args, attr)
         _attr = os.path.abspath(_attr)
         setattr(args, attr, _attr)
 
+
     os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.scratch_dir is not None:
+        args.scratch_dir = os.path.abspath(args.scratch_dir)
+        os.makedirs(args.scratch_dir, exist_ok=True)
 
     return (args)
 
