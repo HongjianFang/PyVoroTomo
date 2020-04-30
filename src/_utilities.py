@@ -10,6 +10,7 @@ import argparse
 import configparser
 import logging
 import mpi4py.MPI as MPI
+import os
 import signal
 import time
 
@@ -96,6 +97,7 @@ def parse_args():
     Parse and return command line arguments.
     """
 
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "events",
@@ -118,10 +120,8 @@ def parse_args():
         "-l",
         "--log_file",
         type=str,
-        default="vorotomo.log",
         help="Log file."
     )
-    stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
     parser.add_argument(
         "-o",
         "--output_dir",
@@ -142,7 +142,25 @@ def parse_args():
         help="Be verbose."
     )
 
-    return (parser.parse_args())
+    args = parser.parse_args()
+    if args.log_file is None:
+        args.log_file = os.path.join(args.output_dir, "vorotomo.log")
+
+    for attr in (
+        "events",
+        "network",
+        "configuration_file",
+        "log_file",
+        "output_dir",
+        "scratch_dir"
+    ):
+        _attr = getattr(args, attr)
+        _attr = os.path.abspath(_attr)
+        setattr(args, attr, _attr)
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    return (args)
 
 
 def parse_cfg(configuration_file):
@@ -153,6 +171,7 @@ def parse_cfg(configuration_file):
     cfg = dict()
     parser = configparser.ConfigParser()
     parser.read(configuration_file)
+
     _cfg = dict()
     _cfg["niter"] = parser.getint(
         "algorithm",
@@ -212,14 +231,20 @@ def parse_cfg(configuration_file):
     cfg["algorithm"] = _cfg
 
     _cfg = dict()
-    _cfg["initial_pwave_path"] = parser.get(
+
+    initial_pwave_path = parser.get(
         "model",
         "initial_pwave_path"
     )
-    _cfg["initial_swave_path"] = parser.get(
+    initial_pwave_path = os.path.abspath(initial_pwave_path)
+    _cfg["initial_pwave_path"] = initial_pwave_path
+
+    initial_swave_path = parser.get(
         "model",
         "initial_swave_path"
     )
+    initial_swave_path = os.path.abspath(initial_swave_path)
+    _cfg["initial_swave_path"] = initial_swave_path
     cfg["model"] = _cfg
 
     _cfg = dict()
@@ -282,3 +307,21 @@ def signal_handler(sig, frame):
     """
 
     raise (SystemError("Interrupting signal received... aborting"))
+
+def write_cfg(argc, cfg):
+    """
+    Write the execution configuration to disk for later reference.
+    """
+
+    output_dir = argc.output_dir
+
+    parser = configparser.ConfigParser()
+    argc = vars(argc)
+    argc = {key: str(argc[key]) for key in argc}
+    cfg["argc"] = argc
+    parser.read_dict(cfg)
+    path = os.path.join(output_dir, "vorotomo.cfg")
+    with open(path, "w") as configuration_file:
+        parser.write(configuration_file)
+
+    return (True)

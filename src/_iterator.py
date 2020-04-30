@@ -763,6 +763,7 @@ class InversionIterator(object):
 
             # Parse configuration-file parameters.
             self.cfg = _utilities.parse_cfg(self.argc.configuration_file)
+            _utilities.write_cfg(self.argc, self.cfg)
 
         self.synchronize(attrs=["cfg"])
 
@@ -964,12 +965,12 @@ class InversionIterator(object):
 
         logger.info(f"Saving data from iteration #{self.iiter}")
 
-        os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, f"{self.iiter:02d}")
 
+        self.pwave_model.savez(path + ".pwave_model")
+        self.swave_model.savez(path + ".swave_model")
+
         if self.iiter > 0:
-            self.pwave_model.savez(path + ".pwave_model")
-            self.swave_model.savez(path + ".swave_model")
             pwave_stack = np.stack(self.pwave_realization_stack)
             swave_stack = np.stack(self.swave_realization_stack)
             np.savez(
