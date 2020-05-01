@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import pykonal
 
-import _constants
-import _picklable
+from . import _constants
+from . import _picklable
 
 def parse_event_data(argc):
     """

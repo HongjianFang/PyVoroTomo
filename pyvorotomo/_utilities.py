@@ -14,7 +14,7 @@ import os
 import signal
 import time
 
-import _constants
+from . import _constants
 
 COMM = MPI.COMM_WORLD
 RANK = COMM.Get_rank()

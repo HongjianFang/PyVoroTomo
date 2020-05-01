@@ -7,9 +7,9 @@ import scipy.sparse
 import scipy.spatial
 import tempfile
 
-import _dataio
-import _constants
-import _utilities
+from . import _dataio
+from . import _constants
+from . import _utilities
 
 # Get logger handle.
 logger = _utilities.get_logger(f"__main__.{__name__}")
