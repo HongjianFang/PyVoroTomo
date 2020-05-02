@@ -12,7 +12,7 @@ name            = "pyvorotomo"
 description     = "Parsimonious Voronoi-cell based tomograph (Fang et al., 2019)"
 url             = "https://github.com/malcolmw/PyVoroTomo"
 email           = "malcolm.white@.usc.edu"
-author          = "Malcolm C. A. White"
+author          = "Hongjian Fang and Malcolm C. A. White"
 requires_python = ">=3.8"
 packages        = ["pyvorotomo"]
 required        = ["mpi4py", "numpy", "pandas", "pykonal==0.2.3a0", "tables", "scipy"]
