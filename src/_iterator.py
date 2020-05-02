@@ -390,7 +390,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells_random(self):
+    def _generate_voronoi_cells_random(self,hvratio = 1.0):
         """
         Generate randomly distributed Voronoi cells.
         """
@@ -400,7 +400,11 @@ class InversionIterator(object):
             max_coords = self.pwave_model.max_coords
             delta = (max_coords - min_coords)
             nvoronoi = self.cfg["algorithm"]["nvoronoi"]
-            cells = np.random.rand(nvoronoi, 3) * delta + min_coords
+            #cells = np.random.rand(nvoronoi, 3) * delta + min_coords
+            cells_horiz = np.random.rand(nvoronoi,2) * delta[1:] + min_coords[1:]
+            min_coords_rad = max_coords[0] - delta[0] * hvratio
+            cells_rad = np.random.rand(nvoronoi,) * delta[0]*hvratio + min_coords_rad
+            cells = np.hstack([cells_rad,cells_horiz])
             self.voronoi_cells = cells
 
         self.synchronize(attrs=["voronoi_cells"])
@@ -409,7 +413,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells_adaptive(self, phase):
+    def _generate_voronoi_cells_adaptive(self, phase,hvratio = 1.0):
         """
         Generate Voronoi cells adaptively.
         """
@@ -460,6 +464,9 @@ class InversionIterator(object):
                     raypath = traveltime.trace_ray(coords)
                     idx = np.random.choice(range(len(raypath)))
                     coords = raypath[idx]
+                    # strech or squezze the rad direction
+                    coords_rad_max = coords[:,0].max()
+                    coords[:,0] = coords_rad_max-(coords_rad_max-coords[:,0])*hvratio
                     voronoi_cells.append(coords)
 
         self.synchronize(attrs=["voronoi_cells"])
@@ -468,7 +475,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _projected_ray_idxs(self, raypath):
+    def _projected_ray_idxs(self, raypath,hvratio = 1.0):
         """
         Return the cell IDs (column IDs) of each segment of the given
         raypath and the length of each segment in counts.
@@ -476,6 +483,10 @@ class InversionIterator(object):
 
         voronoi_cells = sph2xyz(self.voronoi_cells, (0, 0, 0))
         tree = scipy.spatial.cKDTree(voronoi_cells)
+        
+        raypath_rad_max = raypath[:,0].max()
+        raypath[:,0] = raypath_rad_max-(raypath_rad_max-raypath[:,0])*hvratio
+
         raypath = sph2xyz(raypath, (0, 0, 0))
         _, column_idxs = tree.query(raypath)
         column_idxs, counts = np.unique(column_idxs, return_counts=True)
