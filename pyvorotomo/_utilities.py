@@ -20,7 +20,7 @@ COMM = MPI.COMM_WORLD
 RANK = COMM.Get_rank()
 
 
-def configure_logger(name, logfile, verbose=False):
+def configure_logger(name, log_file, verbose=False):
     """
     A utility function to configure logging. Return True on successful
     execution.
@@ -43,8 +43,8 @@ def configure_logger(name, logfile, verbose=False):
     else:
         fmt = f"%(asctime)s::%(levelname)s::{rank:04d}:: %(message)s"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
-    if logfile is not None:
-        file_handler = logging.FileHandler(logfile)
+    if log_file is not None:
+        file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
@@ -92,13 +92,59 @@ def log_errors(logger):
     return (_decorate_func)
 
 
+def root_only(rank, default=True, barrier=True):
+    """
+    A decorator for functions and methods that only the root rank should
+    execute.
+    """
+
+    def _decorate_func(func):
+        """
+        An hidden decorator to permit the rank to be passed in as a
+        decorator argument.
+        """
+
+        def _decorated_func(*args, **kwargs):
+            """
+            The decorated function.
+            """
+            if rank == _constants.ROOT_RANK:
+                value = func(*args, **kwargs)
+                if barrier is True:
+                    COMM.barrier()
+                return (value)
+            else:
+                if barrier is True:
+                    COMM.barrier()
+                return (default)
+
+        return (_decorated_func)
+
+    return (_decorate_func)
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    """
+    A simple subclass to abort all threads if argument parsing fails.
+    """
+
+    def exit(self, status=0, message=None):
+
+        self.print_usage()
+
+        if message is not None:
+            print(message)
+
+        COMM.Abort()
+
+
 def parse_args():
     """
     Parse and return command line arguments.
     """
 
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-    parser = argparse.ArgumentParser()
+    parser = ArgumentParser()
     parser.add_argument(
         "events",
         type=str,
@@ -113,7 +159,7 @@ def parse_args():
         "-c",
         "--configuration_file",
         type=str,
-        default="vorotomo.cfg",
+        default=f"{parser.prog}.cfg",
         help="Configuration file."
     )
     parser.add_argument(
@@ -142,9 +188,11 @@ def parse_args():
         help="Be verbose."
     )
 
+
     args = parser.parse_args()
+
     if args.log_file is None:
-        args.log_file = os.path.join(args.output_dir, "vorotomo.log")
+        args.log_file = os.path.join(args.output_dir, f"{parser.prog}.log")
 
     for attr in (
         "events",
@@ -158,11 +206,15 @@ def parse_args():
         setattr(args, attr, _attr)
 
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    if RANK == _constants.ROOT_RANK:
+        os.makedirs(args.output_dir, exist_ok=True)
 
     if args.scratch_dir is not None:
         args.scratch_dir = os.path.abspath(args.scratch_dir)
-        os.makedirs(args.scratch_dir, exist_ok=True)
+        if RANK == _constants.ROOT_RANK:
+            os.makedirs(args.scratch_dir, exist_ok=True)
+
+    COMM.barrier()
 
     return (args)
 
@@ -273,37 +325,6 @@ def parse_cfg(configuration_file):
     return (cfg)
 
 
-def root_only(rank, default=True, barrier=True):
-    """
-    A decorator for functions and methods that only the root rank should
-    execute.
-    """
-
-    def _decorate_func(func):
-        """
-        An hidden decorator to permit the rank to be passed in as a
-        decorator argument.
-        """
-
-        def _decorated_func(*args, **kwargs):
-            """
-            The decorated function.
-            """
-            if rank == _constants.ROOT_RANK:
-                value = func(*args, **kwargs)
-                if barrier is True:
-                    COMM.barrier()
-                return (value)
-            else:
-                if barrier is True:
-                    COMM.barrier()
-                return (default)
-
-        return (_decorated_func)
-
-    return (_decorate_func)
-
-
 @log_errors
 def signal_handler(sig, frame):
     """
@@ -324,7 +345,7 @@ def write_cfg(argc, cfg):
     argc = {key: str(argc[key]) for key in argc}
     cfg["argc"] = argc
     parser.read_dict(cfg)
-    path = os.path.join(output_dir, "vorotomo.cfg")
+    path = os.path.join(output_dir, "pyvorotomo.cfg")
     with open(path, "w") as configuration_file:
         parser.write(configuration_file)
 
