@@ -1,3 +1,4 @@
+import h5py as h5
 import mpi4py.MPI as MPI
 import numpy as np
 import os
@@ -5,6 +6,7 @@ import pandas as pd
 import pykonal
 import scipy.sparse
 import scipy.spatial
+import shutil
 import tempfile
 
 from . import _dataio
@@ -48,13 +50,14 @@ class InversionIterator(object):
         self._residuals = None
         self._sensitivity_matrix = None
         self._stations = None
+        self._step_size = None
         self._sampled_arrivals = None
         self._voronoi_cells = None
         if RANK == ROOT_RANK:
             scratch_dir = argc.scratch_dir
-            self._traveltime_dir_obj = tempfile.TemporaryDirectory(dir=scratch_dir)
-            self._traveltime_dir = self._traveltime_dir_obj.name
-        self.synchronize(attrs=["traveltime_dir"])
+            self._scratch_dir_obj = tempfile.TemporaryDirectory(dir=scratch_dir)
+            self._scratch_dir = self._scratch_dir_obj.name
+        self.synchronize(attrs=["scratch_dir"])
 
     @property
     def argc(self):
@@ -82,6 +85,8 @@ class InversionIterator(object):
 
     @events.setter
     def events(self, value):
+        value = value.sort_values("event_id")
+        value = value.reset_index(drop=True)
         self._events = value
 
     @property
@@ -125,6 +130,10 @@ class InversionIterator(object):
         return (var)
 
     @property
+    def raypath_dir(self):
+        return (os.path.join(self.scratch_dir, "raypaths"))
+
+    @property
     def residuals(self):
         return (self._residuals)
 
@@ -141,6 +150,14 @@ class InversionIterator(object):
         self._sampled_arrivals = value
 
     @property
+    def scratch_dir(self):
+        return (self._scratch_dir)
+
+    @scratch_dir.setter
+    def scratch_dir(self, value):
+        self._scratch_dir = value
+
+    @property
     def sensitivity_matrix(self):
         return (self._sensitivity_matrix)
 
@@ -155,6 +172,14 @@ class InversionIterator(object):
     @stations.setter
     def stations(self, value):
         self._stations = value
+
+    @property
+    def step_size(self):
+        return (self._step_size)
+
+    @step_size.setter
+    def step_size(self, value):
+        self._step_size = value
 
     @property
     def swave_model(self):
@@ -182,11 +207,7 @@ class InversionIterator(object):
 
     @property
     def traveltime_dir(self):
-        return (self._traveltime_dir)
-
-    @traveltime_dir.setter
-    def traveltime_dir(self, value):
-        self._traveltime_dir = value
+        return (os.path.join(self.scratch_dir, "traveltimes"))
 
     @property
     def voronoi_cells(self):
@@ -255,7 +276,7 @@ class InversionIterator(object):
         logger.info(f"Computing {phase}-wave sensitivity matrix")
 
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
-        traveltime_dir = self.traveltime_dir
+        raypath_dir = self.raypath_dir
 
         index_keys = ["network", "station"]
         arrivals = self.sampled_arrivals.set_index(index_keys)
@@ -299,13 +320,15 @@ class InversionIterator(object):
 
         else:
 
+
             column_idxs = np.array([], dtype=_constants.DTYPE_INT)
             nsegments = np.array([], dtype=_constants.DTYPE_INT)
             nonzero_values = np.array([], dtype=_constants.DTYPE_REAL)
             residuals = np.array([], dtype=_constants.DTYPE_REAL)
 
+            step_size = self.step_size
             events = self.events.set_index("event_id")
-            events = events.sort_index()
+            events["idx"] = range(len(events))
 
             while True:
 
@@ -327,21 +350,26 @@ class InversionIterator(object):
                 _arrivals = arrivals.loc[(network, station)]
                 _arrivals = _arrivals.set_index("event_id")
 
-                # Initialize the ray tracer.
-                path = os.path.join(traveltime_dir, f"{network}.{station}.{phase}.npz")
-                traveltime = pykonal.fields.load(path)
-                step_size = traveltime.step_size
+                # Open the raypath file.
+                filename = f"{network}.{station}.{phase}.h5"
+                path = os.path.join(raypath_dir, filename)
+                raypath_file = h5.File(path, mode="r")
 
                 for event_id, arrival in _arrivals.iterrows():
+
                     event = events.loc[event_id]
-                    event_coords = event[["latitude", "longitude", "depth"]]
-                    event_coords = geo2sph(event_coords)
-                    raypath = traveltime.trace_ray(event_coords)
+                    idx = int(event["idx"])
+
+                    raypath = raypath_file[phase][:, idx]
+                    raypath = np.stack(raypath).T
+
                     _column_idxs, counts = self._projected_ray_idxs(raypath)
                     column_idxs = np.append(column_idxs, _column_idxs)
                     nsegments = np.append(nsegments, len(_column_idxs))
                     nonzero_values = np.append(nonzero_values, counts * step_size)
                     residuals = np.append(residuals, arrival["residual"])
+
+                raypath_file.close()
 
         COMM.barrier()
 
@@ -624,6 +652,84 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
+    def _trace_rays(self, phase):
+        """
+        Trace rays for all arrivals in self.sampled_arrivals and store
+        in HDF5 file. Only trace non-existent raypaths.
+        """
+
+        logger.info("Tracing rays.")
+
+        raypath_dir = self.raypath_dir
+        traveltime_dir = self.traveltime_dir
+        arrivals = self.sampled_arrivals
+        arrivals = arrivals.set_index(["network", "station"])
+        arrivals = arrivals.sort_index()
+
+        if RANK == ROOT_RANK:
+
+            os.makedirs(raypath_dir, exist_ok=True)
+            index = arrivals.index.unique()
+            self._dispatch(index)
+
+        else:
+
+            events = self.events
+            events = events.set_index("event_id")
+            events["idx"] = range(len(events))
+
+            while True:
+
+                item = self._request_dispatch()
+
+                if item is None:
+                    logger.debug("Sentinel received.")
+                    break
+
+                network, station = item
+                filename = f"{network}.{station}.{phase}"
+
+                path = os.path.join(traveltime_dir, filename + ".npz")
+                traveltime = pykonal.fields.load(path)
+
+                path = os.path.join(raypath_dir, filename + ".h5")
+                raypath_file = h5.File(path, mode="a")
+
+                if phase not in raypath_file:
+                    dtype = h5.vlen_dtype(_constants.DTYPE_REAL)
+                    dataset = raypath_file.create_dataset(
+                        phase,
+                        (3, len(events),),
+                        dtype=dtype
+                    )
+                else:
+                    dataset = raypath_file[phase]
+
+                event_ids = arrivals.loc[(network, station), "event_id"].values
+
+                for event_id in event_ids:
+
+                    event = events.loc[event_id]
+                    idx = int(event["idx"])
+
+                    if np.stack(dataset[:, idx]).size != 0:
+                        continue
+
+                    columns = ["latitude", "longitude", "depth"]
+                    coords = event[columns]
+                    coords = geo2sph(coords)
+                    raypath = traveltime.trace_ray(coords)
+                    dataset[:, idx] = raypath.T.copy()
+
+                raypath_file.close()
+
+        COMM.barrier()
+
+        return (True)
+
+
+
+    @_utilities.log_errors(logger)
     def _update_projection_matrix(self):
         """
         Update the projection matrix using the current Voronoi cells.
@@ -734,6 +840,7 @@ class InversionIterator(object):
             for ireal in range(nreal):
                 logger.info(f"Realization #{ireal+1} (/{nreal})")
                 self._sample_arrivals(phase, weighted=homogenize_raypaths)
+                self._trace_rays(phase)
                 self._generate_voronoi_cells(
                     adaptive=adaptive_voronoi,
                     phase=phase
@@ -743,6 +850,7 @@ class InversionIterator(object):
                 self._compute_model_update(phase)
         self.update_models()
         self.compute_traveltime_lookup_tables()
+        self.purge_raypaths()
         self.relocate_events()
         self.update_arrival_residuals()
         self.save(output_dir)
@@ -830,8 +938,24 @@ class InversionIterator(object):
             # Parse velocity model files.
             velocity_models = _dataio.parse_velocity_models(self.cfg)
             self.pwave_model, self.swave_model = velocity_models
+            self.step_size = self.pwave_model.step_size
 
-        self.synchronize(attrs=["pwave_model", "swave_model"])
+        self.synchronize(attrs=["pwave_model", "swave_model", "step_size"])
+
+        return (True)
+
+
+    @_utilities.log_errors(logger)
+    @_utilities.root_only(RANK)
+    def purge_raypaths(self):
+        """
+        Destroys all stored raypaths.
+        """
+
+        logger.debug("Purging raypath directory.")
+
+        shutil.rmtree(self.raypath_dir)
+        os.makedirs(self.raypath_dir)
 
         return (True)
 
@@ -1019,6 +1143,7 @@ class InversionIterator(object):
             "swave_model",
             "sampled_arrivals",
             "stations",
+            "step_size",
             "voronoi_cells"
         )
 
