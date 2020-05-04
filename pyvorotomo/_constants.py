@@ -15,6 +15,14 @@ EVENT_DTYPES = dict(
     time=np.float64,
     residual=np.float64
 )
+EVENT_FIELDS = [
+    "event_id",
+    "latitude",
+    "longitude",
+    "depth",
+    "time",
+    "residual"
+]
 
 ARRIVAL_DTYPES = dict(
     event_id=np.int64,
@@ -24,3 +32,11 @@ ARRIVAL_DTYPES = dict(
     time=np.float64,
     residual=np.float64
 )
+ARRIVAL_FIELDS = [
+    "event_id",
+    "network",
+    "station",
+    "phase",
+    "time",
+    "residual"
+]

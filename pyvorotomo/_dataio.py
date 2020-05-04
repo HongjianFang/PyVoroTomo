@@ -30,6 +30,22 @@ def parse_event_data(argc):
     events = pd.read_hdf(argc.events, key="events")
     arrivals = pd.read_hdf(argc.events, key="arrivals")
 
+    for field in _constants.EVENT_FIELDS:
+        if field not in events.columns:
+            error = ValueError(
+                f"Input event data must have the following fields: "
+                f"{_constants.EVENT_FIELDS}"
+            )
+            raise (error)
+
+    for field in _constants.ARRIVAL_FIELDS:
+        if field not in arrivals.columns:
+            error = ValueError(
+                f"Input arrival data must have the following fields: "
+                f"{_constants.ARRIVAL_FIELDS}"
+            )
+            raise (error)
+
     return (events, arrivals)
 
 

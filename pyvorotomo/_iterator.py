@@ -1111,6 +1111,7 @@ class InversionIterator(object):
         events       = self.events
         EVENT_DTYPES = _constants.EVENT_DTYPES
         for column in EVENT_DTYPES:
+
             events[column] = events[column].astype(EVENT_DTYPES[column])
 
         arrivals       = self.arrivals
