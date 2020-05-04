@@ -180,6 +180,12 @@ def parse_args():
         help="Output directory."
     )
     parser.add_argument(
+        "-r",
+        "--relocate_first",
+        action="store_true",
+        help="Relocate events before first model update."
+    )
+    parser.add_argument(
         "-s",
         "--scratch_dir",
         type=str,
@@ -189,7 +195,7 @@ def parse_args():
         "-v",
         "--verbose",
         action="store_true",
-        help="Be verbose."
+        help="Verbose logging."
     )
 
 

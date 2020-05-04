@@ -59,8 +59,9 @@ def main(argc):
     # Compute traveltime-lookup tables.
     inversion_iterator.compute_traveltime_lookup_tables()
 
-    # Relocate all events.
-    inversion_iterator.relocate_events()
+    if argc.relocate_first is True:
+        # Relocate all events.
+        inversion_iterator.relocate_events()
 
     # Update arrival residuals.
     inversion_iterator.update_arrival_residuals()
