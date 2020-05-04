@@ -40,6 +40,7 @@ class InversionIterator(object):
         self._cfg = None
         self._events = None
         self._iiter = 0
+        self._phases = None
         self._projection_matrix = None
         self._pwave_model = None
         self._swave_model = None
@@ -96,6 +97,14 @@ class InversionIterator(object):
     @iiter.setter
     def iiter(self, value):
         self._iiter = value
+
+    @property
+    def phases(self):
+        return (self._phases)
+
+    @phases.setter
+    def phases(self, value):
+        self._phases = value
 
     @property
     def projection_matrix(self):
@@ -799,7 +808,9 @@ class InversionIterator(object):
                 coords = geometry.loc[(network, station), keys]
                 coords = geo2sph(coords)
 
-                for phase, model in (("P", self.pwave_model), ("S", self.swave_model)):
+                for phase in self.phases:
+                    handle = f"{phase.lower()}wave_model"
+                    model = getattr(self, handle)
                     solver = PointSourceSolver(coord_sys="spherical")
                     solver.vv.min_coords = model.min_coords
                     solver.vv.node_intervals = model.node_intervals
@@ -835,7 +846,7 @@ class InversionIterator(object):
 
         logger.info(f"Iteration #{self.iiter} (/{niter}).")
 
-        for phase in ("P", "S"):
+        for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
             for ireal in range(nreal):
                 logger.info(f"Realization #{ireal+1} (/{nreal})")
@@ -895,7 +906,12 @@ class InversionIterator(object):
             data = _dataio.parse_event_data(self.argc)
             self.events, self.arrivals = data
 
-        self.synchronize(attrs=["events"])
+            # Register the available phase types.
+            phases = self.arrivals["phase"]
+            phases = phases.unique()
+            self.phases = sorted(phases)
+
+        self.synchronize(attrs=["events", "arrivals", "phases"])
 
         return (True)
 
@@ -1091,22 +1107,29 @@ class InversionIterator(object):
 
         path = os.path.join(output_dir, f"{self.iiter:02d}")
 
-        self.pwave_model.savez(path + ".pwave_model")
-        self.swave_model.savez(path + ".swave_model")
+        for phase in self.phases:
+            handle = f"{phase.lower()}wave_model"
+            model = getattr(self, handle)
+            self.pwave_model.savez(path + f".{handle}")
 
-        if self.iiter > 0:
-            pwave_stack = np.stack(self.pwave_realization_stack)
-            swave_stack = np.stack(self.swave_realization_stack)
-            np.savez(
-                f"{path}.realizations.npz",
-                pwave_stack=pwave_stack,
-                pwave_variance=self.pwave_variance,
-                swave_stack=swave_stack,
-                swave_variance=self.swave_variance,
-                min_coords=self.pwave_model.min_coords,
-                node_intervals=self.pwave_model.node_intervals,
-                npts=self.pwave_model.npts
-            )
+            if self.iiter > 0:
+
+                for phase in self.phases:
+
+                    handle = f"{phase.lower()}wave_variance"
+                    variance = getattr(self, handle)
+
+                    handle = f"{phase.lower()}wave_model"
+                    model = getattr(self, handle)
+
+                    field = pykonal.fields.ScalarField3D(coord_sys="spherical")
+                    field.min_coords = model.min_coords
+                    field.node_intervals = model.node_intervals
+                    field.npts = model.npts
+                    field.values = variance
+
+                    handle = f"{phase.lower()}wave_variance"
+                    field.savez(path + f".{handle}")
 
         events       = self.events
         EVENT_DTYPES = _constants.EVENT_DTYPES
@@ -1239,13 +1262,19 @@ class InversionIterator(object):
         """
 
         if RANK == ROOT_RANK:
-            stack = np.stack(self.pwave_realization_stack)
-            self.pwave_model.values = np.mean(stack, axis=0)
 
-            stack = np.stack(self.swave_realization_stack)
-            self.swave_model.values = np.mean(stack, axis=0)
+            for phase in self.phases:
+                handle = f"{phase.lower()}wave_realization_stack"
+                stack = getattr(self, handle)
+                stack = np.stack(stack)
+                values = np.mean(stack, axis=0)
 
-        self.synchronize(attrs=["pwave_model", "swave_model"])
+                handle = f"{phase.lower()}wave_model"
+                model = getattr(self, handle)
+                model.values = values
+
+        attrs = [f"{phase.lower()}wave_model" for phase in self.phases]
+        self.synchronize(attrs=attrs)
 
         return (True)
 
