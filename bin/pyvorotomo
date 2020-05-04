@@ -94,4 +94,7 @@ if __name__ == "__main__":
     )
 
     # Start the  main loop.
-    main(argc)
+    try:
+        main(argc)
+    except Exception as exc:
+        _utilities.abort()

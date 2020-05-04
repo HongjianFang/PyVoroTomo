@@ -20,6 +20,10 @@ COMM = MPI.COMM_WORLD
 RANK = COMM.Get_rank()
 
 
+def abort():
+    COMM.Abort()
+
+
 def configure_logger(name, log_file, verbose=False):
     """
     A utility function to configure logging. Return True on successful
@@ -135,7 +139,7 @@ class ArgumentParser(argparse.ArgumentParser):
         if message is not None:
             print(message)
 
-        COMM.Abort()
+        abort()
 
 
 def parse_args():
