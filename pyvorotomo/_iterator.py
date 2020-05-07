@@ -1110,7 +1110,7 @@ class InversionIterator(object):
         for phase in self.phases:
             handle = f"{phase.lower()}wave_model"
             model = getattr(self, handle)
-            self.pwave_model.savez(path + f".{handle}")
+            model.savez(path + f".{handle}")
 
             if self.iiter > 0:
 
