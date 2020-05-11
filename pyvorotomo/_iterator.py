@@ -10,6 +10,7 @@ import shutil
 import tempfile
 
 from . import _dataio
+from . import _clustering
 from . import _constants
 from . import _utilities
 
@@ -21,6 +22,7 @@ PointSourceSolver = pykonal.solver.PointSourceSolver
 geo2sph = pykonal.transformations.geo2sph
 sph2geo = pykonal.transformations.sph2geo
 sph2xyz = pykonal.transformations.sph2xyz
+xyz2sph = pykonal.transformations.xyz2sph
 
 COMM       = MPI.COMM_WORLD
 RANK       = COMM.Get_rank()
@@ -419,89 +421,60 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, adaptive=False, phase=None):
+    def _generate_voronoi_cells(self, phase, nvoronoi):
         """
-        Generate Voronoi cells.
-        """
-
-        if adaptive is False:
-            self._generate_voronoi_cells_random()
-        else:
-            self._generate_voronoi_cells_adaptive(phase)
-
-
-    @_utilities.log_errors(logger)
-    def _generate_voronoi_cells_random(self):
-        """
-        Generate randomly distributed Voronoi cells.
+        Generate Voronoi cells using k-medians clustering of raypaths.
         """
 
-        if RANK == ROOT_RANK:
-            min_coords = self.pwave_model.min_coords
-            max_coords = self.pwave_model.max_coords
-            delta = (max_coords - min_coords)
-            nvoronoi = self.cfg["algorithm"]["nvoronoi"]
-            cells = np.random.rand(nvoronoi, 3) * delta + min_coords
-            self.voronoi_cells = cells
-
-        self.synchronize(attrs=["voronoi_cells"])
-
-        return (True)
-
-
-    @_utilities.log_errors(logger)
-    def _generate_voronoi_cells_adaptive(self, phase):
-        """
-        Generate Voronoi cells adaptively.
-        """
+        logger.debug("Generating Voronoi cells using k-medians clustering.")
 
         if RANK == ROOT_RANK:
 
-            nvoronoi = self.cfg["algorithm"]["nvoronoi"]
-            arrivals = self.sampled_arrivals.sample(n=nvoronoi)
-            arrivals = arrivals.set_index(["network", "station"])
+            raypaths = []
+            raypath_dir = self.raypath_dir
+
+            columns = ["network", "station"]
+            arrivals = self.sampled_arrivals.set_index(columns)
             arrivals = arrivals.sort_index()
             index = arrivals.index.unique()
-            event_ids = [tuple(arrivals.loc[idx, "event_id"].values) for idx in index]
-            items = zip(index, event_ids)
-            self._dispatch(items)
 
-            voronoi_cells = COMM.gather(None, root=ROOT_RANK)
-            voronoi_cells = filter(lambda item: item is not None, voronoi_cells)
-            voronoi_cells = sum(voronoi_cells, [])
-            voronoi_cells = np.stack(voronoi_cells)
-            self.voronoi_cells = voronoi_cells
+            events = self.events.set_index("event_id")
+            events["idx"] = range(len(events))
 
-        else:
+            for network, station in index:
 
-            traveltime_dir = self.traveltime_dir
-            events = self.events
-            events = events.set_index("event_id")
+                _arrivals = arrivals.loc[(network, station)]
+                _arrivals = _arrivals.set_index("event_id")
 
-            voronoi_cells = []
+                # Open the raypath file.
+                filename = f"{network}.{station}.{phase}.h5"
+                path = os.path.join(raypath_dir, filename)
+                raypath_file = h5.File(path, mode="r")
 
-            while True:
+                for event_id, arrival in _arrivals.iterrows():
 
-                item = self._request_dispatch()
+                    event = events.loc[event_id]
+                    idx = int(event["idx"])
 
-                if item is None:
-                    COMM.gather(voronoi_cells, root=ROOT_RANK)
-                    break
+                    raypath = raypath_file[phase][:, idx]
+                    raypath = np.stack(raypath).T
 
-                (network, station), event_ids = item
+                    raypaths.append(raypath)
 
-                filename = f"{network}.{station}.{phase}.npz"
-                path = os.path.join(traveltime_dir, filename)
-                traveltime = pykonal.fields.load(path)
+            points = np.concatenate(raypaths)
+            points = sph2xyz(points, (0, 0, 0))
 
-                for event_id in event_ids:
-                    keys = ["latitude", "longitude", "depth"]
-                    coords = events.loc[event_id, keys]
-                    coords = geo2sph(coords)
-                    raypath = traveltime.trace_ray(coords)
-                    idx = np.random.choice(range(len(raypath)))
-                    coords = raypath[idx]
-                    voronoi_cells.append(coords)
+            indexes = np.random.choice(
+                range(len(points)),
+                nvoronoi,
+                replace=False
+            )
+            medians = points[indexes]
+
+            medians = _clustering.k_medians(medians, points)
+            medians = xyz2sph(medians, (0, 0, 0))
+
+            self.voronoi_cells = medians
 
         self.synchronize(attrs=["voronoi_cells"])
 
@@ -839,7 +812,6 @@ class InversionIterator(object):
         niter = self.cfg["algorithm"]["niter"]
         nreal = self.cfg["algorithm"]["nreal"]
         output_dir = self.argc.output_dir
-        adaptive_voronoi = self.cfg["algorithm"]["adaptive_voronoi_cells"]
         homogenize_raypaths = self.cfg["algorithm"]["homogenize_raypaths"]
 
         self.iiter += 1
@@ -853,8 +825,8 @@ class InversionIterator(object):
                 self._sample_arrivals(phase, weighted=homogenize_raypaths)
                 self._trace_rays(phase)
                 self._generate_voronoi_cells(
-                    adaptive=adaptive_voronoi,
-                    phase=phase
+                    phase,
+                    _clustering.fibonacci(ireal)
                 )
                 self._update_projection_matrix()
                 self._compute_sensitivity_matrix(phase)
