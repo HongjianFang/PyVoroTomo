@@ -426,7 +426,7 @@ class InversionIterator(object):
         Generate Voronoi cells using k-medians clustering of raypaths.
         """
 
-        logger.debug("Generating Voronoi cells using k-medians clustering.")
+        logger.debug(f"Generating {nvoronoi} Voronoi cells using k-medians clustering.")
 
         if RANK == ROOT_RANK:
 
@@ -812,6 +812,7 @@ class InversionIterator(object):
         niter = self.cfg["algorithm"]["niter"]
         nreal = self.cfg["algorithm"]["nreal"]
         output_dir = self.argc.output_dir
+        nvoronoi = self.cfg["algorithm"]["nvoronoi"]
         homogenize_raypaths = self.cfg["algorithm"]["homogenize_raypaths"]
 
         self.iiter += 1
@@ -826,7 +827,7 @@ class InversionIterator(object):
                 self._trace_rays(phase)
                 self._generate_voronoi_cells(
                     phase,
-                    _clustering.fibonacci(ireal)
+                    nvoronoi#_clustering.fibonacci(ireal)
                 )
                 self._update_projection_matrix()
                 self._compute_sensitivity_matrix(phase)
