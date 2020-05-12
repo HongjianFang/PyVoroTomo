@@ -430,6 +430,8 @@ class InversionIterator(object):
 
         if RANK == ROOT_RANK:
 
+            k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
+
             raypaths = []
             raypath_dir = self.raypath_dir
 
@@ -471,7 +473,11 @@ class InversionIterator(object):
             )
             medians = points[indexes]
 
-            medians = _clustering.k_medians(medians, points)
+            medians = _clustering.k_medians(
+                medians,
+                points,
+                npts=k_medians_npts
+            )
             medians = xyz2sph(medians, (0, 0, 0))
 
             self.voronoi_cells = medians

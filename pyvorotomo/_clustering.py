@@ -21,11 +21,15 @@ def fibonacci(n):
 
 
 @_utilities.log_errors(logger)
-def k_medians(medians, points):
+def k_medians(medians, points, npts=None):
     """
     Return k-medians cluster medians for *points* given initial
     *medians*.
     """
+
+    if npts is not None:
+        indexes = np.random.choice(np.arange(len(points)), npts, replace=False)
+        points = points[indexes]
 
     last_indexes = None
 

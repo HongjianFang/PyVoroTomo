@@ -257,6 +257,10 @@ def parse_cfg(configuration_file):
         "adaptive_voronoi_cells",
         fallback=True
     )
+    _cfg["k_medians_npts"] = parser.getint(
+        "algorithm",
+        "k_medians_npts"
+    )
     _cfg["narrival"] = parser.getint(
         "algorithm",
         "narrival"
