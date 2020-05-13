@@ -197,6 +197,12 @@ def parse_args():
         action="store_true",
         help="Verbose logging."
     )
+    parser.add_argument(
+        "-x",
+        "--output_realizations",
+        action="store_true",
+        help="Save realizations to disk."
+    )
 
 
     args = parser.parse_args()

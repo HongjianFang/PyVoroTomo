@@ -463,21 +463,12 @@ class InversionIterator(object):
                     raypaths.append(raypath)
 
             points = np.concatenate(raypaths)
-            points = sph2xyz(points, (0, 0, 0))
-
-            indexes = np.random.choice(
-                range(len(points)),
-                nvoronoi,
-                replace=False
-            )
-            medians = points[indexes]
 
             medians = _clustering.k_medians(
-                medians,
+                nvoronoi,
                 points,
                 npts=k_medians_npts
             )
-            medians = xyz2sph(medians, (0, 0, 0))
 
             self.voronoi_cells = medians
 
@@ -825,9 +816,8 @@ class InversionIterator(object):
 
         for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
-            for ifib in range(1, nfib+1):
-                nvoronoi = _clustering.fibonacci(ifib)
-                nvoronoi = 144
+            for ifib in range(nfib):
+                nvoronoi = _clustering.fibonacci(ifib + 1)
                 for irep in range(nrep):
                     logger.info(f"Repetition #{irep+1} (/{nrep}) for Fibonacci #{ifib+1} (/{nfib})")
                     self._sample_arrivals(phase, weighted=homogenize_raypaths)
@@ -1110,6 +1100,15 @@ class InversionIterator(object):
 
                     handle = f"{phase.lower()}wave_variance"
                     field.savez(path + f".{handle}")
+
+                    if self.argc.output_realizations is True:
+                        handle = f"{phase.lower()}wave_realization_stack"
+                        stack = getattr(self, handle)
+                        stack = np.stack(stack)
+                        np.savez(
+                            path + f".{phase.lower()}wave_realizations.npz",
+                            realizations=stack
+                        )
 
         events       = self.events
         EVENT_DTYPES = _constants.EVENT_DTYPES

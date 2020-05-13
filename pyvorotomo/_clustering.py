@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.spatial
+import pykonal
 
 from . import _utilities
 
@@ -21,15 +22,47 @@ def fibonacci(n):
 
 
 @_utilities.log_errors(logger)
-def k_medians(medians, points, npts=None):
+def _init_centroids(k, points):
     """
-    Return k-medians cluster medians for *points* given initial
-    *medians*.
+    Use the kmeans++ algorithm to initialize the cluster centroids.
+
+    k - is the number of clusters.
+    points - the points to cluster (in spherical coordinates).
+    """
+
+    xyz = pykonal.transformations.sph2xyz(points, (0, 0, 0))
+
+    idxs = np.arange(len(xyz))
+    idx = np.random.choice(idxs)
+    centroids = [xyz[idx]]
+
+    for ik in range(k-1):
+        tree = scipy.spatial.cKDTree(centroids)
+        dist, _ = tree.query(xyz)
+        prob = dist / np.sum(dist)
+        idx = np.random.choice(idxs, p=prob)
+        centroids.append(xyz[idx])
+
+    centroids = np.stack(centroids)
+
+    return (centroids)
+
+
+@_utilities.log_errors(logger)
+def k_medians(k, points, npts=None):
+    """
+    Return k-medians cluster medians for *points*.
+
+    points - Data points to cluster (in spherical coordinates).
     """
 
     if npts is not None:
         indexes = np.random.choice(np.arange(len(points)), npts, replace=False)
         points = points[indexes]
+
+    xyz = pykonal.transformations.sph2xyz(points, (0, 0, 0))
+
+    medians = _init_centroids(k, points)
 
     last_indexes = None
 
@@ -37,7 +70,7 @@ def k_medians(medians, points, npts=None):
 
         _medians = []
         tree = scipy.spatial.cKDTree(medians)
-        _, indexes = tree.query(points)
+        _, indexes = tree.query(xyz)
 
         if np.all(indexes == last_indexes):
 
@@ -47,10 +80,12 @@ def k_medians(medians, points, npts=None):
 
         for index in range(len(medians)):
 
-            _points = points[indexes == index]
-            median = np.median(_points, axis=0)
+            _xyz = xyz[indexes == index]
+            median = np.median(_xyz, axis=0)
             _medians.append(median)
 
         medians = np.stack(_medians)
+
+    medians = pykonal.transformations.xyz2sph(medians)
 
     return (medians)
