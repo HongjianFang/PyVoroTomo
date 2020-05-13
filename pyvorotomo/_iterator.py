@@ -279,14 +279,13 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _compute_sensitivity_matrix(self, phase):
+    def _compute_sensitivity_matrix(self, phase, nvoronoi):
         """
         Compute the sensitivity matrix.
         """
 
         logger.info(f"Computing {phase}-wave sensitivity matrix")
 
-        nvoronoi = self.cfg["algorithm"]["nvoronoi"]
         raypath_dir = self.raypath_dir
 
         index_keys = ["network", "station"]
@@ -718,14 +717,12 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _update_projection_matrix(self):
+    def _update_projection_matrix(self, nvoronoi):
         """
         Update the projection matrix using the current Voronoi cells.
         """
 
         logger.info("Updating projection matrix")
-
-        nvoronoi = self.cfg["algorithm"]["nvoronoi"]
 
         if RANK == ROOT_RANK:
             voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
@@ -815,10 +812,11 @@ class InversionIterator(object):
         updating velocity models, event locations, and arrival residuals.
         """
 
-        niter = self.cfg["algorithm"]["niter"]
-        nreal = self.cfg["algorithm"]["nreal"]
         output_dir = self.argc.output_dir
-        nvoronoi = self.cfg["algorithm"]["nvoronoi"]
+
+        niter = self.cfg["algorithm"]["niter"]
+        nfib = self.cfg["algorithm"]["nfib"]
+        nrep = self.cfg["algorithm"]["nrep"]
         homogenize_raypaths = self.cfg["algorithm"]["homogenize_raypaths"]
 
         self.iiter += 1
@@ -827,17 +825,20 @@ class InversionIterator(object):
 
         for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
-            for ireal in range(nreal):
-                logger.info(f"Realization #{ireal+1} (/{nreal})")
-                self._sample_arrivals(phase, weighted=homogenize_raypaths)
-                self._trace_rays(phase)
-                self._generate_voronoi_cells(
-                    phase,
-                    nvoronoi#_clustering.fibonacci(ireal)
-                )
-                self._update_projection_matrix()
-                self._compute_sensitivity_matrix(phase)
-                self._compute_model_update(phase)
+            for ifib in range(1, nfib+1):
+                nvoronoi = _clustering.fibonacci(ifib)
+                nvoronoi = 144
+                for irep in range(nrep):
+                    logger.info(f"Repetition #{irep+1} (/{nrep}) for Fibonacci #{ifib+1} (/{nfib})")
+                    self._sample_arrivals(phase, weighted=homogenize_raypaths)
+                    self._trace_rays(phase)
+                    self._generate_voronoi_cells(
+                        phase,
+                        nvoronoi
+                    )
+                    self._update_projection_matrix(nvoronoi)
+                    self._compute_sensitivity_matrix(phase, nvoronoi)
+                    self._compute_model_update(phase)
         self.update_models()
         self.compute_traveltime_lookup_tables()
         self.purge_raypaths()

@@ -244,18 +244,13 @@ def parse_cfg(configuration_file):
         "niter",
         fallback=1
     )
-    _cfg["nreal"] = parser.getint(
+    _cfg["nfib"] = parser.getint(
         "algorithm",
-        "nreal"
+        "nfib"
     )
-    _cfg["nvoronoi"] = parser.getint(
+    _cfg["nrep"] = parser.getint(
         "algorithm",
-        "nvoronoi"
-    )
-    _cfg["adaptive_voronoi_cells"] = parser.getboolean(
-        "algorithm",
-        "adaptive_voronoi_cells",
-        fallback=True
+        "nrep"
     )
     _cfg["k_medians_npts"] = parser.getint(
         "algorithm",
