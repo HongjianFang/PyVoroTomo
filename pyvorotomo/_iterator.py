@@ -12,6 +12,7 @@ import tempfile
 from . import _dataio
 from . import _clustering
 from . import _constants
+from . import _picklable
 from . import _utilities
 
 # Get logger handle.
@@ -117,7 +118,7 @@ class InversionIterator(object):
         self._projection_matrix = value
 
     @property
-    def pwave_model(self):
+    def pwave_model(self) -> _picklable.ScalarField3D:
         return (self._pwave_model)
 
     @pwave_model.setter
@@ -135,10 +136,18 @@ class InversionIterator(object):
         self._pwave_realization_stack = value
 
     @property
-    def pwave_variance(self):
-        stack = np.stack(self.pwave_realization_stack)
-        var = np.var(stack, axis=0)
-        return (var)
+    def pwave_variance(self) -> _picklable.ScalarField3D:
+        if self._pwave_variance is None:
+            field = _picklable.ScalarField3D(coord_sys="spherical")
+            field.min_coords = self.pwave_model.min_coords
+            field.node_intervals = self.pwave_model.node_intervals
+            field.npts = self.pwave_model.npts
+            self._pwave_variance = field
+        return (self._pwave_variance)
+
+    @pwave_variance.setter
+    def pwave_variance(self, value: _picklable.ScalarField3D):
+        self._pwave_variance = value
 
     @property
     def raypath_dir(self):
@@ -211,10 +220,18 @@ class InversionIterator(object):
         self._swave_realization_stack = value
 
     @property
-    def swave_variance(self):
-        stack = np.stack(self.swave_realization_stack)
-        var = np.var(stack, axis=0)
-        return (var)
+    def swave_variance(self) -> _picklable.ScalarField3D:
+        if self._swave_variance is None:
+            field = _picklable.ScalarField3D(coord_sys="spherical")
+            field.min_coords = self.pwave_model.min_coords
+            field.node_intervals = self.pwave_model.node_intervals
+            field.npts = self.pwave_model.npts
+            self._swave_variance = field
+        return (self._swave_variance)
+
+    @swave_variance.setter
+    def swave_variance(self, value: _picklable.ScalarField3D):
+        self._swave_variance = value
 
     @property
     def traveltime_dir(self):
@@ -829,12 +846,13 @@ class InversionIterator(object):
                     self._update_projection_matrix(nvoronoi)
                     self._compute_sensitivity_matrix(phase, nvoronoi)
                     self._compute_model_update(phase)
-        self.update_models()
+            self.update_model(phase)
+            self.save_model(phase)
         self.compute_traveltime_lookup_tables()
         self.purge_raypaths()
         self.relocate_events()
         self.update_arrival_residuals()
-        self.save(output_dir)
+        self.save_events()
 
 
     @_utilities.log_errors(logger)
@@ -1061,54 +1079,15 @@ class InversionIterator(object):
 
     @_utilities.log_errors(logger)
     @_utilities.root_only(RANK)
-    def save(self, output_dir):
+    def save_events(self):
         """
-        Save the current "events", "arrivals", "pwave_model",
-        "pwave_realization_stack", "pwave_variance", "swave_model",
-        "swave_realization_stack", and "swave_variance" to disk.
-
-        "events" and "arrivals" are written to a HDF5 file
-        using pandas.HDFStore and the remaining attributes
-        are written to a NPZ file with handles "pwave_model",
-        "swave_model", "pwave_stack", "swave_stack".
+        Save the current "events", and "arrivals" to and HDF5 file using
+        pandas.HDFStore.
         """
 
-        logger.info(f"Saving data from iteration #{self.iiter}")
+        logger.info(f"Saving event data from iteration #{self.iiter}")
 
-        path = os.path.join(output_dir, f"{self.iiter:02d}")
-
-        for phase in self.phases:
-            handle = f"{phase.lower()}wave_model"
-            model = getattr(self, handle)
-            model.savez(path + f".{handle}")
-
-            if self.iiter > 0:
-
-                for phase in self.phases:
-
-                    handle = f"{phase.lower()}wave_variance"
-                    variance = getattr(self, handle)
-
-                    handle = f"{phase.lower()}wave_model"
-                    model = getattr(self, handle)
-
-                    field = pykonal.fields.ScalarField3D(coord_sys="spherical")
-                    field.min_coords = model.min_coords
-                    field.node_intervals = model.node_intervals
-                    field.npts = model.npts
-                    field.values = variance
-
-                    handle = f"{phase.lower()}wave_variance"
-                    field.savez(path + f".{handle}")
-
-                    if self.argc.output_realizations is True:
-                        handle = f"{phase.lower()}wave_realization_stack"
-                        stack = getattr(self, handle)
-                        stack = np.stack(stack)
-                        np.savez(
-                            path + f".{phase.lower()}wave_realizations.npz",
-                            realizations=stack
-                        )
+        path = os.path.join(self.argc.output_dir, f"{self.iiter:02d}")
 
         events       = self.events
         EVENT_DTYPES = _constants.EVENT_DTYPES
@@ -1126,6 +1105,39 @@ class InversionIterator(object):
 
         return(True)
 
+
+    @_utilities.log_errors(logger)
+    @_utilities.root_only(RANK)
+    def save_model(self, phase: str) -> bool:
+
+        logger.info(f"Saving {phase}-wave model for iteration #{self.iiter}")
+
+        phase = phase.lower()
+        path = os.path.join(self.argc.output_dir, f"{self.iiter:02d}")
+
+        handle = f"{phase}wave_model"
+        model = getattr(self, handle)
+        model.savez(path + f".{handle}")
+
+        if self.iiter == 0:
+
+            return (True)
+
+        handle = f"{phase}wave_variance"
+        model = getattr(self, handle)
+        model.savez(path + f".{handle}")
+
+        handle = f"{phase}wave_realization_stack"
+        if self.argc.output_realizations is True:
+            stack = getattr(self, handle)
+            stack = np.stack(stack)
+            np.savez(
+                path + f".{handle}.npz",
+                data=stack
+            )
+        setattr(self, handle, None)
+
+        return (True)
 
 
     @_utilities.log_errors(logger)
@@ -1234,25 +1246,35 @@ class InversionIterator(object):
         return (True)
 
     @_utilities.log_errors(logger)
-    def update_models(self):
+    def update_model(self, phase):
         """
         Stack random realizations to obtain average model and update
         appropriate attributes.
         """
 
+        phase = phase.lower()
+
         if RANK == ROOT_RANK:
 
-            for phase in self.phases:
-                handle = f"{phase.lower()}wave_realization_stack"
-                stack = getattr(self, handle)
-                stack = np.stack(stack)
-                values = np.mean(stack, axis=0)
+            handle = f"{phase}wave_realization_stack"
+            stack = getattr(self, handle)
+            stack = np.stack(stack)
+            values = np.mean(stack, axis=0)
+            variance = np.var(stack, axis=0)
 
-                handle = f"{phase.lower()}wave_model"
-                model = getattr(self, handle)
-                model.values = values
+            handle = f"{phase}wave_model"
+            model = getattr(self, handle)
+            model.values = values
 
-        attrs = [f"{phase.lower()}wave_model" for phase in self.phases]
+            handle = f"{phase}wave_variance"
+            model = getattr(self, handle)
+            model.values = variance
+
+        attrs = [
+            f"{phase}wave_model",
+            f"{phase}wave_realization_stack",
+            f"{phase}wave_variance"
+        ]
         self.synchronize(attrs=attrs)
 
         return (True)
