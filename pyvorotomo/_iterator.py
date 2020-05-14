@@ -734,8 +734,6 @@ class InversionIterator(object):
             _arrivals = _arrivals.reset_index()
             self.arrivals = _arrivals
 
-            logger.debug(self.arrivals)
-
         self.synchronize(attrs=["arrivals"])
 
         return (True)
