@@ -266,15 +266,6 @@ def parse_cfg(configuration_file):
         "algorithm",
         "narrival"
     )
-    _cfg["homogenize_raypaths"] = parser.getboolean(
-        "algorithm",
-        "homogenize_raypaths",
-        fallback=True
-    )
-    _cfg["n_raypath_bins"] = parser.getint(
-        "algorithm",
-        "n_raypath_bins"
-    )
     _cfg["outlier_removal_factor"] = parser.getfloat(
         "algorithm",
         "outlier_removal_factor"

@@ -1,4 +1,5 @@
 import h5py as h5
+import KDEpy as kp
 import mpi4py.MPI as MPI
 import numpy as np
 import os
@@ -529,7 +530,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _sample_arrivals(self, phase, weighted=True):
+    def _sample_arrivals(self, phase):
         """
         Draw a random sample of arrivals and update the
         "sampled_arrivals" attribute.
@@ -537,6 +538,7 @@ class InversionIterator(object):
 
         if RANK == ROOT_RANK:
             tukey_k = self.cfg["algorithm"]["outlier_removal_factor"]
+            narrival = self.cfg["algorithm"]["narrival"]
 
             # Subset for the appropriate phase.
             arrivals = self.arrivals.set_index("phase")
@@ -546,104 +548,14 @@ class InversionIterator(object):
             # Remove outliers.
             arrivals = remove_outliers(arrivals, tukey_k, "residual")
 
-            if weighted is True:
-                arrivals = self._sample_arrivals_weighted(arrivals)
-            else:
-                narrival = self.cfg["algorithm"]["narrival"]
-                arrivals = self.arrivals.sample(n=narrival)
+            # Sample arrivals.
+            arrivals = arrivals.sample(n=narrival, weights="weight")
 
             self.sampled_arrivals = arrivals
 
         self.synchronize(attrs=["sampled_arrivals"])
 
         return (True)
-
-
-
-    @_utilities.log_errors(logger)
-    def _sample_arrivals_weighted(self, arrivals):
-        """
-        Draw a random sample of arrivals and update the
-        "sampled_arrivals" attribute.
-        """
-
-        logger.debug("Homogenizing raypaths.")
-
-        nbins = self.cfg["algorithm"]["n_raypath_bins"]
-        narrival = self.cfg["algorithm"]["narrival"]
-
-        columns = [
-            "network",
-            "station",
-            "latitude",
-            "longitude",
-            "depth"
-        ]
-        stations = self.stations[columns]
-        stations = stations.rename(
-            columns={
-                "latitude": "station_latitude",
-                "longitude": "station_longitude",
-                "depth": "station_depth"
-            }
-        )
-
-        columns = [
-            "latitude",
-            "longitude",
-            "depth",
-            "event_id"
-        ]
-        events = self.events[columns]
-        events = events.rename(
-            columns={
-                "latitude": "event_latitude",
-                "longitude": "event_longitude",
-                "depth": "event_depth"
-            }
-        )
-
-        columns = [
-            "event_id",
-            "network",
-            "station",
-            "time",
-            "residual"
-        ]
-        arrivals = arrivals[columns]
-        arrivals = arrivals.merge(events, on="event_id")
-        arrivals = arrivals.merge(stations, on=["network", "station"])
-
-        columns = [
-            "event_latitude",
-            "event_longitude",
-            "event_depth",
-            "station_latitude",
-            "station_longitude",
-            "station_depth"
-        ]
-        idxs = []
-        for column in columns:
-            values = arrivals[column].values
-            bins = np.linspace(np.min(values), np.max(values), nbins)
-            idxs.append(np.digitize(values, bins))
-        arrivals["path_id"] = list(zip(*idxs))
-        arrivals = arrivals.sort_values("path_id")
-        value_counts = arrivals["path_id"].value_counts()
-        arrivals = arrivals.set_index("path_id")
-        arrivals["weight"] = 1 / np.exp(value_counts)
-        arrivals = arrivals.sample(n=narrival, weights="weight")
-        arrivals = arrivals.reset_index(drop=True)
-        columns = [
-            "event_id",
-            "network",
-            "station",
-            "time",
-            "residual"
-        ]
-        arrivals = arrivals[columns]
-
-        return (arrivals)
 
 
     @_utilities.log_errors(logger)
@@ -722,6 +634,111 @@ class InversionIterator(object):
 
         return (True)
 
+
+    @_utilities.log_errors(logger)
+    def _update_arrival_weights(
+        self,
+        phase: str,
+        npts: int=16,
+        bandwidth: int=0.1
+    ) -> bool:
+        """
+        Update arrival weights using KDE.
+        """
+
+        logger.info("Updating weights for homogeneous raypath sampling.")
+
+        if RANK == ROOT_RANK:
+            arrivals = self.arrivals
+            arrivals = arrivals[arrivals["phase"] == phase]
+
+            # Merge event data.
+            events = self.events.rename(
+                columns={
+                    "latitude": "event_latitude",
+                    "longitude": "event_longitude",
+                    "depth": "event_depth"
+                }
+            )
+
+            merge_columns = [
+                "event_latitude",
+                "event_longitude",
+                "event_depth",
+                "event_id"
+            ]
+
+            arrivals = arrivals.merge(events[merge_columns], on="event_id")
+
+            # Merge station data.
+            stations = self.stations.rename(
+                columns={
+                    "latitude": "station_latitude",
+                    "longitude": "station_longitude"
+                }
+            )
+
+            merge_columns = [
+                "station_latitude",
+                "station_longitude",
+                "network",
+                "station"
+            ]
+            merge_keys = ["network", "station"]
+            arrivals = arrivals.merge(stations[merge_columns], on=merge_keys)
+
+            # Compute station-to-event azimuth and epicentral distance.
+            dlat = arrivals["event_latitude"] - arrivals["station_latitude"]
+            dlon = arrivals["event_longitude"] - arrivals["station_longitude"]
+            arrivals["azimuth"] = np.arctan2(dlat, dlon)
+            arrivals["delta"] = np.sqrt(dlat ** 2  +  dlon ** 2)
+
+            # Extract the data for KDE fitting.
+            kde_columns = [
+                "event_latitude",
+                "event_longitude",
+                "event_depth",
+                "azimuth",
+                "delta"
+            ]
+            ndim = len(kde_columns)
+            data = arrivals[kde_columns].values
+
+            # Normalize the data.
+            data_min = data.min(axis=0)
+            data_max = data.max(axis=0)
+            data_range = data_max - data_min
+            data_delta = data - data_min
+            data = data_delta / data_range
+
+            # Fit and evaluate the KDE.
+            kde = kp.FFTKDE(bw=bandwidth).fit(data)
+            points, values = kde.evaluate(npts)
+            points = [np.unique(points[:,iax]) for iax in range(ndim)]
+            values = values.reshape((npts,) * ndim)
+
+            # Initialize an interpolator because FFTKDE is evaluated on a
+            # regular grid.
+            interpolator = scipy.interpolate.RegularGridInterpolator(points, values)
+
+            # Assign weights to the arrivals.
+            arrivals["weight"] = 1 / interpolator(data)
+
+            # Update the self.arrivals attribute with weights.
+            index_columns = ["network", "station", "event_id", "phase"]
+            arrivals = arrivals.set_index(index_columns)
+            _arrivals = self.arrivals.set_index(index_columns)
+            _arrivals = _arrivals.sort_index()
+            idx = arrivals.index
+            _arrivals.loc[idx, "weight"] = arrivals["weight"]
+            _arrivals = _arrivals.reset_index()
+            self.arrivals = _arrivals
+
+            logger.debug(self.arrivals)
+
+        self.synchronize(attrs=["arrivals"])
+
+        return (True)
 
 
     @_utilities.log_errors(logger)
@@ -833,11 +850,12 @@ class InversionIterator(object):
 
         for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
+            self._update_arrival_weights(phase)
             for ifib in range(nfib):
                 nvoronoi = _clustering.fibonacci(ifib + 1)
                 for irep in range(nrep):
                     logger.info(f"Repetition #{irep+1} (/{nrep}) for Fibonacci #{ifib+1} (/{nfib})")
-                    self._sample_arrivals(phase, weighted=homogenize_raypaths)
+                    self._sample_arrivals(phase)
                     self._trace_rays(phase)
                     self._generate_voronoi_cells(
                         phase,
