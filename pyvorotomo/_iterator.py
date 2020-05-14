@@ -842,7 +842,6 @@ class InversionIterator(object):
         niter = self.cfg["algorithm"]["niter"]
         nfib = self.cfg["algorithm"]["nfib"]
         nrep = self.cfg["algorithm"]["nrep"]
-        homogenize_raypaths = self.cfg["algorithm"]["homogenize_raypaths"]
 
         self.iiter += 1
 
