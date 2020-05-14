@@ -49,16 +49,12 @@ def _init_centroids(k, points):
 
 
 @_utilities.log_errors(logger)
-def k_medians(k, points, npts=None):
+def k_medians(k, points):
     """
     Return k-medians cluster medians for *points*.
 
     points - Data points to cluster (in spherical coordinates).
     """
-
-    if npts is not None:
-        indexes = np.random.choice(np.arange(len(points)), npts, replace=False)
-        points = points[indexes]
 
     xyz = pykonal.transformations.sph2xyz(points, (0, 0, 0))
 

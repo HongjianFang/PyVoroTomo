@@ -458,35 +458,35 @@ class InversionIterator(object):
             index = arrivals.index.unique()
 
             events = self.events.set_index("event_id")
-            events["idx"] = range(len(events))
+            events["idx"] = np.arange(len(events))
+
+            points = np.empty((0, 3))
 
             for network, station in index:
-
-                _arrivals = arrivals.loc[(network, station)]
-                _arrivals = _arrivals.set_index("event_id")
 
                 # Open the raypath file.
                 filename = f"{network}.{station}.{phase}.h5"
                 path = os.path.join(raypath_dir, filename)
                 raypath_file = h5.File(path, mode="r")
 
-                for event_id, arrival in _arrivals.iterrows():
+                event_ids = arrivals.loc[(network, station), "event_id"]
+                idxs = events.loc[event_ids, "idx"]
+                idxs = np.sort(idxs)
 
-                    event = events.loc[event_id]
-                    idx = int(event["idx"])
+                _points = raypath_file[phase][:, idxs]
+                if _points.ndim > 1:
+                    _points = np.apply_along_axis(np.concatenate, 1, _points)
+                else:
+                    _points = np.stack(_points)
+                _points = _points.T
 
-                    raypath = raypath_file[phase][:, idx]
-                    raypath = np.stack(raypath).T
+                points = np.vstack([points, _points])
 
-                    raypaths.append(raypath)
+            idxs = np.arange(len(points))
+            idxs = np.random.choice(idxs, k_medians_npts, replace=False)
+            points = points[idxs]
 
-            points = np.concatenate(raypaths)
-
-            medians = _clustering.k_medians(
-                nvoronoi,
-                points,
-                npts=k_medians_npts
-            )
+            medians = _clustering.k_medians(nvoronoi, points)
 
             self.voronoi_cells = medians
 
