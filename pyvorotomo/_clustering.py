@@ -69,8 +69,7 @@ def k_medians(k, points):
         _, indexes = tree.query(xyz)
 
         if np.all(indexes == last_indexes):
-
-            return (medians)
+            break
 
         last_indexes = indexes
 
@@ -82,6 +81,6 @@ def k_medians(k, points):
 
         medians = np.stack(_medians)
 
-    medians = pykonal.transformations.xyz2sph(medians)
+    medians = pykonal.transformations.xyz2sph(medians, origin=(0, 0, 0))
 
     return (medians)
