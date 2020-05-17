@@ -1285,11 +1285,7 @@ class InversionIterator(object):
             model = getattr(self, handle)
             model.values = variance
 
-        attrs = [
-            f"{phase}wave_model",
-            f"{phase}wave_realization_stack",
-            f"{phase}wave_variance"
-        ]
+        attrs = [f"{phase}wave_model"]
         self.synchronize(attrs=attrs)
 
         return (True)
