@@ -250,13 +250,13 @@ def parse_cfg(configuration_file):
         "niter",
         fallback=1
     )
-    _cfg["nfib"] = parser.getint(
+    _cfg["nvoronoi"] = parser.getint(
         "algorithm",
-        "nfib"
+        "nvoronoi"
     )
-    _cfg["nrep"] = parser.getint(
+    _cfg["nreal"] = parser.getint(
         "algorithm",
-        "nrep"
+        "nreal"
     )
     _cfg["k_medians_npts"] = parser.getint(
         "algorithm",

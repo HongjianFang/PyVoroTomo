@@ -838,8 +838,8 @@ class InversionIterator(object):
         output_dir = self.argc.output_dir
 
         niter = self.cfg["algorithm"]["niter"]
-        nfib = self.cfg["algorithm"]["nfib"]
-        nrep = self.cfg["algorithm"]["nrep"]
+        nvoronoi = self.cfg["algorithm"]["nvoronoi"]
+        nreal = self.cfg["algorithm"]["nreal"]
 
         self.iiter += 1
 
@@ -848,19 +848,17 @@ class InversionIterator(object):
         for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
             self._update_arrival_weights(phase)
-            for ifib in range(nfib):
-                nvoronoi = _clustering.fibonacci(ifib + 1)
-                for irep in range(nrep):
-                    logger.info(f"Repetition #{irep+1} (/{nrep}) for Fibonacci #{ifib+1} (/{nfib})")
-                    self._sample_arrivals(phase)
-                    self._trace_rays(phase)
-                    self._generate_voronoi_cells(
-                        phase,
-                        nvoronoi
-                    )
-                    self._update_projection_matrix(nvoronoi)
-                    self._compute_sensitivity_matrix(phase, nvoronoi)
-                    self._compute_model_update(phase)
+            for ireal in range(nreal):
+                logger.info(f"Realization #{ireal+1} (/{nreal}).")
+                self._sample_arrivals(phase)
+                self._trace_rays(phase)
+                self._generate_voronoi_cells(
+                    phase,
+                    nvoronoi
+                )
+                self._update_projection_matrix(nvoronoi)
+                self._compute_sensitivity_matrix(phase, nvoronoi)
+                self._compute_model_update(phase)
             self.update_model(phase)
             self.save_model(phase)
         self.compute_traveltime_lookup_tables()
