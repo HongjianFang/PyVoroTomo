@@ -1,4 +1,5 @@
 import h5py as h5
+import KDEpy as kp
 import mpi4py.MPI as MPI
 import numpy as np
 import os
@@ -10,7 +11,9 @@ import shutil
 import tempfile
 
 from . import _dataio
+from . import _clustering
 from . import _constants
+from . import _picklable
 from . import _utilities
 
 # Get logger handle.
@@ -21,6 +24,7 @@ PointSourceSolver = pykonal.solver.PointSourceSolver
 geo2sph = pykonal.transformations.geo2sph
 sph2geo = pykonal.transformations.sph2geo
 sph2xyz = pykonal.transformations.sph2xyz
+xyz2sph = pykonal.transformations.xyz2sph
 
 COMM       = MPI.COMM_WORLD
 RANK       = COMM.Get_rank()
@@ -115,7 +119,7 @@ class InversionIterator(object):
         self._projection_matrix = value
 
     @property
-    def pwave_model(self):
+    def pwave_model(self) -> _picklable.ScalarField3D:
         return (self._pwave_model)
 
     @pwave_model.setter
@@ -133,10 +137,18 @@ class InversionIterator(object):
         self._pwave_realization_stack = value
 
     @property
-    def pwave_variance(self):
-        stack = np.stack(self.pwave_realization_stack)
-        var = np.var(stack, axis=0)
-        return (var)
+    def pwave_variance(self) -> _picklable.ScalarField3D:
+        if self._pwave_variance is None:
+            field = _picklable.ScalarField3D(coord_sys="spherical")
+            field.min_coords = self.pwave_model.min_coords
+            field.node_intervals = self.pwave_model.node_intervals
+            field.npts = self.pwave_model.npts
+            self._pwave_variance = field
+        return (self._pwave_variance)
+
+    @pwave_variance.setter
+    def pwave_variance(self, value: _picklable.ScalarField3D):
+        self._pwave_variance = value
 
     @property
     def raypath_dir(self):
@@ -209,10 +221,18 @@ class InversionIterator(object):
         self._swave_realization_stack = value
 
     @property
-    def swave_variance(self):
-        stack = np.stack(self.swave_realization_stack)
-        var = np.var(stack, axis=0)
-        return (var)
+    def swave_variance(self) -> _picklable.ScalarField3D:
+        if self._swave_variance is None:
+            field = _picklable.ScalarField3D(coord_sys="spherical")
+            field.min_coords = self.pwave_model.min_coords
+            field.node_intervals = self.pwave_model.node_intervals
+            field.npts = self.pwave_model.npts
+            self._swave_variance = field
+        return (self._swave_variance)
+
+    @swave_variance.setter
+    def swave_variance(self, value: _picklable.ScalarField3D):
+        self._swave_variance = value
 
     @property
     def traveltime_dir(self):
@@ -277,14 +297,13 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _compute_sensitivity_matrix(self, phase):
+    def _compute_sensitivity_matrix(self, phase, nvoronoi):
         """
         Compute the sensitivity matrix.
         """
 
         logger.info(f"Computing {phase}-wave sensitivity matrix")
 
-        nvoronoi = self.cfg["algorithm"]["nvoronoi"]
         raypath_dir = self.raypath_dir
 
         index_keys = ["network", "station"]
@@ -419,89 +438,57 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, adaptive=False, phase=None):
+    def _generate_voronoi_cells(self, phase, nvoronoi):
         """
-        Generate Voronoi cells.
-        """
-
-        if adaptive is False:
-            self._generate_voronoi_cells_random()
-        else:
-            self._generate_voronoi_cells_adaptive(phase)
-
-
-    @_utilities.log_errors(logger)
-    def _generate_voronoi_cells_random(self):
-        """
-        Generate randomly distributed Voronoi cells.
+        Generate Voronoi cells using k-medians clustering of raypaths.
         """
 
-        if RANK == ROOT_RANK:
-            min_coords = self.pwave_model.min_coords
-            max_coords = self.pwave_model.max_coords
-            delta = (max_coords - min_coords)
-            nvoronoi = self.cfg["algorithm"]["nvoronoi"]
-            cells = np.random.rand(nvoronoi, 3) * delta + min_coords
-            self.voronoi_cells = cells
-
-        self.synchronize(attrs=["voronoi_cells"])
-
-        return (True)
-
-
-    @_utilities.log_errors(logger)
-    def _generate_voronoi_cells_adaptive(self, phase):
-        """
-        Generate Voronoi cells adaptively.
-        """
+        logger.debug(f"Generating {nvoronoi} Voronoi cells using k-medians clustering.")
 
         if RANK == ROOT_RANK:
 
-            nvoronoi = self.cfg["algorithm"]["nvoronoi"]
-            arrivals = self.sampled_arrivals.sample(n=nvoronoi)
-            arrivals = arrivals.set_index(["network", "station"])
+            k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
+
+            raypaths = []
+            raypath_dir = self.raypath_dir
+
+            columns = ["network", "station"]
+            arrivals = self.sampled_arrivals.set_index(columns)
             arrivals = arrivals.sort_index()
             index = arrivals.index.unique()
-            event_ids = [tuple(arrivals.loc[idx, "event_id"].values) for idx in index]
-            items = zip(index, event_ids)
-            self._dispatch(items)
 
-            voronoi_cells = COMM.gather(None, root=ROOT_RANK)
-            voronoi_cells = filter(lambda item: item is not None, voronoi_cells)
-            voronoi_cells = sum(voronoi_cells, [])
-            voronoi_cells = np.stack(voronoi_cells)
-            self.voronoi_cells = voronoi_cells
+            events = self.events.set_index("event_id")
+            events["idx"] = np.arange(len(events))
 
-        else:
+            points = np.empty((0, 3))
 
-            traveltime_dir = self.traveltime_dir
-            events = self.events
-            events = events.set_index("event_id")
+            for network, station in index:
 
-            voronoi_cells = []
+                # Open the raypath file.
+                filename = f"{network}.{station}.{phase}.h5"
+                path = os.path.join(raypath_dir, filename)
+                raypath_file = h5.File(path, mode="r")
 
-            while True:
+                event_ids = arrivals.loc[(network, station), "event_id"]
+                idxs = events.loc[event_ids, "idx"]
+                idxs = np.sort(idxs)
 
-                item = self._request_dispatch()
+                _points = raypath_file[phase][:, idxs]
+                if _points.ndim > 1:
+                    _points = np.apply_along_axis(np.concatenate, 1, _points)
+                else:
+                    _points = np.stack(_points)
+                _points = _points.T
 
-                if item is None:
-                    COMM.gather(voronoi_cells, root=ROOT_RANK)
-                    break
+                points = np.vstack([points, _points])
 
-                (network, station), event_ids = item
+            idxs = np.arange(len(points))
+            idxs = np.random.choice(idxs, k_medians_npts, replace=False)
+            points = points[idxs]
 
-                filename = f"{network}.{station}.{phase}.npz"
-                path = os.path.join(traveltime_dir, filename)
-                traveltime = pykonal.fields.load(path)
+            medians = _clustering.k_medians(nvoronoi, points)
 
-                for event_id in event_ids:
-                    keys = ["latitude", "longitude", "depth"]
-                    coords = events.loc[event_id, keys]
-                    coords = geo2sph(coords)
-                    raypath = traveltime.trace_ray(coords)
-                    idx = np.random.choice(range(len(raypath)))
-                    coords = raypath[idx]
-                    voronoi_cells.append(coords)
+            self.voronoi_cells = medians
 
         self.synchronize(attrs=["voronoi_cells"])
 
@@ -543,7 +530,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _sample_arrivals(self, phase, weighted=True):
+    def _sample_arrivals(self, phase):
         """
         Draw a random sample of arrivals and update the
         "sampled_arrivals" attribute.
@@ -551,6 +538,7 @@ class InversionIterator(object):
 
         if RANK == ROOT_RANK:
             tukey_k = self.cfg["algorithm"]["outlier_removal_factor"]
+            narrival = self.cfg["algorithm"]["narrival"]
 
             # Subset for the appropriate phase.
             arrivals = self.arrivals.set_index("phase")
@@ -560,104 +548,14 @@ class InversionIterator(object):
             # Remove outliers.
             arrivals = remove_outliers(arrivals, tukey_k, "residual")
 
-            if weighted is True:
-                arrivals = self._sample_arrivals_weighted(arrivals)
-            else:
-                narrival = self.cfg["algorithm"]["narrival"]
-                arrivals = self.arrivals.sample(n=narrival)
+            # Sample arrivals.
+            arrivals = arrivals.sample(n=narrival, weights="weight")
 
             self.sampled_arrivals = arrivals
 
         self.synchronize(attrs=["sampled_arrivals"])
 
         return (True)
-
-
-
-    @_utilities.log_errors(logger)
-    def _sample_arrivals_weighted(self, arrivals):
-        """
-        Draw a random sample of arrivals and update the
-        "sampled_arrivals" attribute.
-        """
-
-        logger.debug("Homogenizing raypaths.")
-
-        nbins = self.cfg["algorithm"]["n_raypath_bins"]
-        narrival = self.cfg["algorithm"]["narrival"]
-
-        columns = [
-            "network",
-            "station",
-            "latitude",
-            "longitude",
-            "depth"
-        ]
-        stations = self.stations[columns]
-        stations = stations.rename(
-            columns={
-                "latitude": "station_latitude",
-                "longitude": "station_longitude",
-                "depth": "station_depth"
-            }
-        )
-
-        columns = [
-            "latitude",
-            "longitude",
-            "depth",
-            "event_id"
-        ]
-        events = self.events[columns]
-        events = events.rename(
-            columns={
-                "latitude": "event_latitude",
-                "longitude": "event_longitude",
-                "depth": "event_depth"
-            }
-        )
-
-        columns = [
-            "event_id",
-            "network",
-            "station",
-            "time",
-            "residual"
-        ]
-        arrivals = arrivals[columns]
-        arrivals = arrivals.merge(events, on="event_id")
-        arrivals = arrivals.merge(stations, on=["network", "station"])
-
-        columns = [
-            "event_latitude",
-            "event_longitude",
-            "event_depth",
-            "station_latitude",
-            "station_longitude",
-            "station_depth"
-        ]
-        idxs = []
-        for column in columns:
-            values = arrivals[column].values
-            bins = np.linspace(np.min(values), np.max(values), nbins)
-            idxs.append(np.digitize(values, bins))
-        arrivals["path_id"] = list(zip(*idxs))
-        arrivals = arrivals.sort_values("path_id")
-        value_counts = arrivals["path_id"].value_counts()
-        arrivals = arrivals.set_index("path_id")
-        arrivals["weight"] = 1 / np.exp(value_counts)
-        arrivals = arrivals.sample(n=narrival, weights="weight")
-        arrivals = arrivals.reset_index(drop=True)
-        columns = [
-            "event_id",
-            "network",
-            "station",
-            "time",
-            "residual"
-        ]
-        arrivals = arrivals[columns]
-
-        return (arrivals)
 
 
     @_utilities.log_errors(logger)
@@ -737,16 +635,117 @@ class InversionIterator(object):
         return (True)
 
 
+    @_utilities.log_errors(logger)
+    def _update_arrival_weights(
+        self,
+        phase: str,
+        npts: int=16,
+        bandwidth: int=0.1
+    ) -> bool:
+        """
+        Update arrival weights using KDE.
+        """
+
+        logger.info("Updating weights for homogeneous raypath sampling.")
+
+        if RANK == ROOT_RANK:
+            arrivals = self.arrivals
+            arrivals = arrivals[arrivals["phase"] == phase]
+
+            # Merge event data.
+            events = self.events.rename(
+                columns={
+                    "latitude": "event_latitude",
+                    "longitude": "event_longitude",
+                    "depth": "event_depth"
+                }
+            )
+
+            merge_columns = [
+                "event_latitude",
+                "event_longitude",
+                "event_depth",
+                "event_id"
+            ]
+
+            arrivals = arrivals.merge(events[merge_columns], on="event_id")
+
+            # Merge station data.
+            stations = self.stations.rename(
+                columns={
+                    "latitude": "station_latitude",
+                    "longitude": "station_longitude"
+                }
+            )
+
+            merge_columns = [
+                "station_latitude",
+                "station_longitude",
+                "network",
+                "station"
+            ]
+            merge_keys = ["network", "station"]
+            arrivals = arrivals.merge(stations[merge_columns], on=merge_keys)
+
+            # Compute station-to-event azimuth and epicentral distance.
+            dlat = arrivals["event_latitude"] - arrivals["station_latitude"]
+            dlon = arrivals["event_longitude"] - arrivals["station_longitude"]
+            arrivals["azimuth"] = np.arctan2(dlat, dlon)
+            arrivals["delta"] = np.sqrt(dlat ** 2  +  dlon ** 2)
+
+            # Extract the data for KDE fitting.
+            kde_columns = [
+                "event_latitude",
+                "event_longitude",
+                "event_depth",
+                "azimuth",
+                "delta"
+            ]
+            ndim = len(kde_columns)
+            data = arrivals[kde_columns].values
+
+            # Normalize the data.
+            data_min = data.min(axis=0)
+            data_max = data.max(axis=0)
+            data_range = data_max - data_min
+            data_delta = data - data_min
+            data = data_delta / data_range
+
+            # Fit and evaluate the KDE.
+            kde = kp.FFTKDE(bw=bandwidth).fit(data)
+            points, values = kde.evaluate(npts)
+            points = [np.unique(points[:,iax]) for iax in range(ndim)]
+            values = values.reshape((npts,) * ndim)
+
+            # Initialize an interpolator because FFTKDE is evaluated on a
+            # regular grid.
+            interpolator = scipy.interpolate.RegularGridInterpolator(points, values)
+
+            # Assign weights to the arrivals.
+            arrivals["weight"] = 1 / interpolator(data)
+
+            # Update the self.arrivals attribute with weights.
+            index_columns = ["network", "station", "event_id", "phase"]
+            arrivals = arrivals.set_index(index_columns)
+            _arrivals = self.arrivals.set_index(index_columns)
+            _arrivals = _arrivals.sort_index()
+            idx = arrivals.index
+            _arrivals.loc[idx, "weight"] = arrivals["weight"]
+            _arrivals = _arrivals.reset_index()
+            self.arrivals = _arrivals
+
+        self.synchronize(attrs=["arrivals"])
+
+        return (True)
+
 
     @_utilities.log_errors(logger)
-    def _update_projection_matrix(self):
+    def _update_projection_matrix(self, nvoronoi):
         """
         Update the projection matrix using the current Voronoi cells.
         """
 
         logger.info("Updating projection matrix")
-
-        nvoronoi = self.cfg["algorithm"]["nvoronoi"]
 
         if RANK == ROOT_RANK:
             voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
@@ -836,11 +835,11 @@ class InversionIterator(object):
         updating velocity models, event locations, and arrival residuals.
         """
 
-        niter = self.cfg["algorithm"]["niter"]
-        nreal = self.cfg["algorithm"]["nreal"]
         output_dir = self.argc.output_dir
-        adaptive_voronoi = self.cfg["algorithm"]["adaptive_voronoi_cells"]
-        homogenize_raypaths = self.cfg["algorithm"]["homogenize_raypaths"]
+
+        niter = self.cfg["algorithm"]["niter"]
+        nvoronoi = self.cfg["algorithm"]["nvoronoi"]
+        nreal = self.cfg["algorithm"]["nreal"]
 
         self.iiter += 1
 
@@ -848,23 +847,25 @@ class InversionIterator(object):
 
         for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
+            self._update_arrival_weights(phase)
             for ireal in range(nreal):
-                logger.info(f"Realization #{ireal+1} (/{nreal})")
-                self._sample_arrivals(phase, weighted=homogenize_raypaths)
+                logger.info(f"Realization #{ireal+1} (/{nreal}).")
+                self._sample_arrivals(phase)
                 self._trace_rays(phase)
                 self._generate_voronoi_cells(
-                    adaptive=adaptive_voronoi,
-                    phase=phase
+                    phase,
+                    nvoronoi
                 )
-                self._update_projection_matrix()
-                self._compute_sensitivity_matrix(phase)
+                self._update_projection_matrix(nvoronoi)
+                self._compute_sensitivity_matrix(phase, nvoronoi)
                 self._compute_model_update(phase)
-        self.update_models()
+            self.update_model(phase)
+            self.save_model(phase)
         self.compute_traveltime_lookup_tables()
         self.purge_raypaths()
         self.relocate_events()
         self.update_arrival_residuals()
-        self.save(output_dir)
+        self.save_events()
 
 
     @_utilities.log_errors(logger)
@@ -1091,45 +1092,15 @@ class InversionIterator(object):
 
     @_utilities.log_errors(logger)
     @_utilities.root_only(RANK)
-    def save(self, output_dir):
+    def save_events(self):
         """
-        Save the current "events", "arrivals", "pwave_model",
-        "pwave_realization_stack", "pwave_variance", "swave_model",
-        "swave_realization_stack", and "swave_variance" to disk.
-
-        "events" and "arrivals" are written to a HDF5 file
-        using pandas.HDFStore and the remaining attributes
-        are written to a NPZ file with handles "pwave_model",
-        "swave_model", "pwave_stack", "swave_stack".
+        Save the current "events", and "arrivals" to and HDF5 file using
+        pandas.HDFStore.
         """
 
-        logger.info(f"Saving data from iteration #{self.iiter}")
+        logger.info(f"Saving event data from iteration #{self.iiter}")
 
-        path = os.path.join(output_dir, f"{self.iiter:02d}")
-
-        for phase in self.phases:
-            handle = f"{phase.lower()}wave_model"
-            model = getattr(self, handle)
-            model.savez(path + f".{handle}")
-
-            if self.iiter > 0:
-
-                for phase in self.phases:
-
-                    handle = f"{phase.lower()}wave_variance"
-                    variance = getattr(self, handle)
-
-                    handle = f"{phase.lower()}wave_model"
-                    model = getattr(self, handle)
-
-                    field = pykonal.fields.ScalarField3D(coord_sys="spherical")
-                    field.min_coords = model.min_coords
-                    field.node_intervals = model.node_intervals
-                    field.npts = model.npts
-                    field.values = variance
-
-                    handle = f"{phase.lower()}wave_variance"
-                    field.savez(path + f".{handle}")
+        path = os.path.join(self.argc.output_dir, f"{self.iiter:02d}")
 
         events       = self.events
         EVENT_DTYPES = _constants.EVENT_DTYPES
@@ -1147,6 +1118,39 @@ class InversionIterator(object):
 
         return(True)
 
+
+    @_utilities.log_errors(logger)
+    @_utilities.root_only(RANK)
+    def save_model(self, phase: str) -> bool:
+
+        logger.info(f"Saving {phase}-wave model for iteration #{self.iiter}")
+
+        phase = phase.lower()
+        path = os.path.join(self.argc.output_dir, f"{self.iiter:02d}")
+
+        handle = f"{phase}wave_model"
+        model = getattr(self, handle)
+        model.savez(path + f".{handle}")
+
+        if self.iiter == 0:
+
+            return (True)
+
+        handle = f"{phase}wave_variance"
+        model = getattr(self, handle)
+        model.savez(path + f".{handle}")
+
+        handle = f"{phase}wave_realization_stack"
+        if self.argc.output_realizations is True:
+            stack = getattr(self, handle)
+            stack = np.stack(stack)
+            np.savez(
+                path + f".{handle}.npz",
+                data=stack
+            )
+        setattr(self, handle, None)
+
+        return (True)
 
 
     @_utilities.log_errors(logger)
@@ -1255,25 +1259,31 @@ class InversionIterator(object):
         return (True)
 
     @_utilities.log_errors(logger)
-    def update_models(self):
+    def update_model(self, phase):
         """
         Stack random realizations to obtain average model and update
         appropriate attributes.
         """
 
+        phase = phase.lower()
+
         if RANK == ROOT_RANK:
 
-            for phase in self.phases:
-                handle = f"{phase.lower()}wave_realization_stack"
-                stack = getattr(self, handle)
-                stack = np.stack(stack)
-                values = np.mean(stack, axis=0)
+            handle = f"{phase}wave_realization_stack"
+            stack = getattr(self, handle)
+            stack = np.stack(stack)
+            values = np.mean(stack, axis=0)
+            variance = np.var(stack, axis=0)
 
-                handle = f"{phase.lower()}wave_model"
-                model = getattr(self, handle)
-                model.values = values
+            handle = f"{phase}wave_model"
+            model = getattr(self, handle)
+            model.values = values
 
-        attrs = [f"{phase.lower()}wave_model" for phase in self.phases]
+            handle = f"{phase}wave_variance"
+            model = getattr(self, handle)
+            model.values = variance
+
+        attrs = [f"{phase}wave_model"]
         self.synchronize(attrs=attrs)
 
         return (True)

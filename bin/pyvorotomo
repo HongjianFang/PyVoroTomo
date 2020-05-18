@@ -67,8 +67,9 @@ def main(argc):
     inversion_iterator.update_arrival_residuals()
 
     # Save initial data.
-    output_dir = inversion_iterator.argc.output_dir
-    inversion_iterator.save(output_dir)
+    for phase in inversion_iterator.phases:
+        inversion_iterator.save_model(phase)
+    inversion_iterator.save_events()
 
     niter = inversion_iterator.cfg["algorithm"]["niter"]
     for iiter in range(niter):

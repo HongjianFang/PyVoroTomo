@@ -15,7 +15,15 @@ email           = "malcolm.white@.usc.edu"
 author          = "Hongjian Fang and Malcolm C. A. White"
 requires_python = ">=3.8"
 packages        = ["pyvorotomo"]
-required        = ["mpi4py", "numpy", "pandas", "pykonal==0.2.3a0", "tables", "scipy"]
+required        = [
+    "KDEpy>=1.0.3",
+    "mpi4py",
+    "numpy",
+    "pandas",
+    "pykonal==0.2.3a0",
+    "tables",
+    "scipy"
+]
 scripts         = ["bin/pyvorotomo"]
 license         = "GNU GPLv3"
 

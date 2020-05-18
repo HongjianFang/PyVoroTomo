@@ -197,6 +197,12 @@ def parse_args():
         action="store_true",
         help="Verbose logging."
     )
+    parser.add_argument(
+        "-x",
+        "--output_realizations",
+        action="store_true",
+        help="Save realizations to disk."
+    )
 
 
     args = parser.parse_args()
@@ -244,31 +250,21 @@ def parse_cfg(configuration_file):
         "niter",
         fallback=1
     )
-    _cfg["nreal"] = parser.getint(
-        "algorithm",
-        "nreal"
-    )
     _cfg["nvoronoi"] = parser.getint(
         "algorithm",
         "nvoronoi"
     )
-    _cfg["adaptive_voronoi_cells"] = parser.getboolean(
+    _cfg["nreal"] = parser.getint(
         "algorithm",
-        "adaptive_voronoi_cells",
-        fallback=True
+        "nreal"
+    )
+    _cfg["k_medians_npts"] = parser.getint(
+        "algorithm",
+        "k_medians_npts"
     )
     _cfg["narrival"] = parser.getint(
         "algorithm",
         "narrival"
-    )
-    _cfg["homogenize_raypaths"] = parser.getboolean(
-        "algorithm",
-        "homogenize_raypaths",
-        fallback=True
-    )
-    _cfg["n_raypath_bins"] = parser.getint(
-        "algorithm",
-        "n_raypath_bins"
     )
     _cfg["outlier_removal_factor"] = parser.getfloat(
         "algorithm",
