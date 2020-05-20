@@ -1,5 +1,5 @@
 __major_version__  = 0
-__minor_version__  = 3
+__minor_version__  = 4
 __patch__          = 0
 __release__        = "dev"
 __version_number__ = ".".join(
