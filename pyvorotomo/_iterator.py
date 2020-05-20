@@ -64,6 +64,22 @@ class InversionIterator(object):
             self._scratch_dir = self._scratch_dir_obj.name
         self.synchronize(attrs=["scratch_dir"])
 
+
+    def __del__(self):
+
+        shutil.rmtree(self.scratch_dir)
+
+
+    def __enter__(self):
+
+        return (self)
+
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+
+        self.__del__()
+
+
     @property
     def argc(self):
         return (self._argc)
