@@ -1199,7 +1199,7 @@ class InversionIterator(object):
         logger.info("Updating arrival residuals.")
 
         traveltime_dir = self.traveltime_dir
-        arrivals = self.arrivals.set_index(["network", "station", "phase"])
+        arrivals = self.arrivals.set_index(["network", "station", "phase", "event_id"])
         arrivals = arrivals.sort_index()
 
         if RANK == ROOT_RANK:
@@ -1216,6 +1216,8 @@ class InversionIterator(object):
             events = self.events.set_index("event_id")
             updated_arrivals = pd.DataFrame()
 
+            last_path = None
+
             while True:
 
                 # Request an event
@@ -1228,31 +1230,31 @@ class InversionIterator(object):
                     break
 
 
-                network, station, phase = item
-                logger.debug(f"Updating {phase}-wave residuals for {network}.{station}.")
+                network, station, phase, event_id = item
 
                 path = os.path.join(traveltime_dir, f"{network}.{station}.{phase}.npz")
-                traveltime = pykonal.fields.load(path)
 
-                _arrivals = arrivals.loc[(network, station, phase)]
-                _arrivals = _arrivals.set_index("event_id")
+                if path != last_path:
 
-                for event_id, arrival in _arrivals.iterrows():
-                    arrival_time = arrival["time"]
-                    origin_time = events.loc[event_id, "time"]
-                    coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
-                    coords = geo2sph(coords)
-                    residual = arrival_time - (origin_time + traveltime.value(coords))
-                    arrival = dict(
-                        network=network,
-                        station=station,
-                        phase=phase,
-                        event_id=event_id,
-                        time=arrival_time,
-                        residual=residual
-                    )
-                    arrival = pd.DataFrame([arrival])
-                    updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
+                    traveltime = pykonal.fields.load(path)
+                    last_path = path
+
+                arrival_time = arrivals.loc[(network, station, phase, event_id), "time"]
+
+                origin_time = events.loc[event_id, "time"]
+                coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
+                coords = geo2sph(coords)
+                residual = arrival_time - (origin_time + traveltime.value(coords))
+                arrival = dict(
+                    network=network,
+                    station=station,
+                    phase=phase,
+                    event_id=event_id,
+                    time=arrival_time,
+                    residual=residual
+                )
+                arrival = pd.DataFrame([arrival])
+                updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
 
         self.synchronize(attrs=["arrivals"])
 
