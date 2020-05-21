@@ -262,6 +262,10 @@ def parse_cfg(configuration_file):
         "algorithm",
         "k_medians_npts"
     )
+    _cfg["min_narrival"] = parser.getint(
+        "algorithm",
+        "min_narrival"
+    )
     _cfg["narrival"] = parser.getint(
         "algorithm",
         "narrival"

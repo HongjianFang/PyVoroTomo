@@ -1090,16 +1090,83 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             # Drop duplicate stations.
-            self.stations = self.stations.drop_duplicates(["network", "station"])
+            keys = ["network", "station"]
+            n0 = len(self.stations)
+            self.stations = self.stations.drop_duplicates(keys)
+            dn = n0 - len(self.stations)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} event{'s' if dn > 1 else ''} duplicate "
+                    f"stations."
+                )
+
+            # Drop duplicate arrivals.
+            keys = ["network", "station", "phase", "event_id"]
+            n0 = len(self.arrivals)
+            self.arrivals = self.arrivals.drop_duplicates(keys)
+            dn = n0 - len(self.arrivals)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} event{'s' if dn > 1 else ''} duplicate "
+                    f"arrivals."
+                )
+
+            # Drop events without minimum number of arrivals
+            min_narrival = self.cfg["algorithm"]["min_narrival"]
+            n0 = len(self.events)
+            counts = self.arrivals["event_id"].value_counts()
+            counts = counts[counts >= min_narrival]
+            event_ids = counts.index
+            self.events = self.events[self.events["event_id"].isin(event_ids)]
+            dn = n0 - len(self.events)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} event{'s' if dn > 1 else ''} with < "
+                    f"{min_narrival} arrivals."
+                )
+
+            # Drop arrivals without events.
+            n0 = len(self.arrivals)
+            bool_idx = self.arrivals["event_id"].isin(self.events["event_id"])
+            self.arrivals = self.arrivals[bool_idx]
+            dn = n0 - len(self.arrivals)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} arrival{'s' if dn > 1 else ''} "
+                    f"without associated events."
+                )
 
             # Drop stations without arrivals.
-            logger.debug("Dropping stations without arrivals.")
+            n0 = len(self.stations)
             arrivals = self.arrivals.set_index(["network", "station"])
             idx_keep = arrivals.index.unique()
             stations = self.stations.set_index(["network", "station"])
             stations = stations.loc[idx_keep]
             stations = stations.reset_index()
             self.stations = stations
+            dn = n0 - len(self.stations)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} station{'s' if dn > 1 else ''} without "
+                    f"associated arrivals."
+                )
+
+            # Drop arrivals without stations.
+            n0 = len(self.arrivals)
+            stations = self.stations.set_index(["network", "station"])
+            idx_keep = stations.index.unique()
+            arrivals = self.arrivals.set_index(["network", "station"])
+            arrivals = arrivals.loc[idx_keep]
+            arrivals = arrivals.reset_index()
+            self.arrivals = arrivals
+            dn = n0 - len(self.arrivals)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} arrival{'s' if dn > 1 else ''} without "
+                    f"associated stations."
+                )
+
+
 
         self.synchronize(attrs=["stations"])
 
