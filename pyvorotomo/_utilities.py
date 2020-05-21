@@ -262,6 +262,10 @@ def parse_cfg(configuration_file):
         "algorithm",
         "k_medians_npts"
     )
+    _cfg["min_narrival"] = parser.getint(
+        "algorithm",
+        "min_narrival"
+    )
     _cfg["narrival"] = parser.getint(
         "algorithm",
         "narrival"
@@ -331,13 +335,13 @@ def parse_cfg(configuration_file):
     return (cfg)
 
 
-@log_errors
 def signal_handler(sig, frame):
     """
     A utility function to to handle interrupting signals.
     """
 
     raise (SystemError("Interrupting signal received... aborting"))
+
 
 def write_cfg(argc, cfg):
     """

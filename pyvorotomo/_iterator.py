@@ -64,6 +64,22 @@ class InversionIterator(object):
             self._scratch_dir = self._scratch_dir_obj.name
         self.synchronize(attrs=["scratch_dir"])
 
+
+    def __del__(self):
+
+        shutil.rmtree(self.scratch_dir)
+
+
+    def __enter__(self):
+
+        return (self)
+
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+
+        self.__del__()
+
+
     @property
     def argc(self):
         return (self._argc)
@@ -1074,16 +1090,83 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             # Drop duplicate stations.
-            self.stations = self.stations.drop_duplicates(["network", "station"])
+            keys = ["network", "station"]
+            n0 = len(self.stations)
+            self.stations = self.stations.drop_duplicates(keys)
+            dn = n0 - len(self.stations)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} event{'s' if dn > 1 else ''} duplicate "
+                    f"stations."
+                )
+
+            # Drop duplicate arrivals.
+            keys = ["network", "station", "phase", "event_id"]
+            n0 = len(self.arrivals)
+            self.arrivals = self.arrivals.drop_duplicates(keys)
+            dn = n0 - len(self.arrivals)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} event{'s' if dn > 1 else ''} duplicate "
+                    f"arrivals."
+                )
+
+            # Drop events without minimum number of arrivals
+            min_narrival = self.cfg["algorithm"]["min_narrival"]
+            n0 = len(self.events)
+            counts = self.arrivals["event_id"].value_counts()
+            counts = counts[counts >= min_narrival]
+            event_ids = counts.index
+            self.events = self.events[self.events["event_id"].isin(event_ids)]
+            dn = n0 - len(self.events)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} event{'s' if dn > 1 else ''} with < "
+                    f"{min_narrival} arrivals."
+                )
+
+            # Drop arrivals without events.
+            n0 = len(self.arrivals)
+            bool_idx = self.arrivals["event_id"].isin(self.events["event_id"])
+            self.arrivals = self.arrivals[bool_idx]
+            dn = n0 - len(self.arrivals)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} arrival{'s' if dn > 1 else ''} "
+                    f"without associated events."
+                )
 
             # Drop stations without arrivals.
-            logger.debug("Dropping stations without arrivals.")
+            n0 = len(self.stations)
             arrivals = self.arrivals.set_index(["network", "station"])
             idx_keep = arrivals.index.unique()
             stations = self.stations.set_index(["network", "station"])
             stations = stations.loc[idx_keep]
             stations = stations.reset_index()
             self.stations = stations
+            dn = n0 - len(self.stations)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} station{'s' if dn > 1 else ''} without "
+                    f"associated arrivals."
+                )
+
+            # Drop arrivals without stations.
+            n0 = len(self.arrivals)
+            stations = self.stations.set_index(["network", "station"])
+            idx_keep = stations.index.unique()
+            arrivals = self.arrivals.set_index(["network", "station"])
+            arrivals = arrivals.loc[idx_keep]
+            arrivals = arrivals.reset_index()
+            self.arrivals = arrivals
+            dn = n0 - len(self.arrivals)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} arrival{'s' if dn > 1 else ''} without "
+                    f"associated stations."
+                )
+
+
 
         self.synchronize(attrs=["stations"])
 
@@ -1199,7 +1282,7 @@ class InversionIterator(object):
         logger.info("Updating arrival residuals.")
 
         traveltime_dir = self.traveltime_dir
-        arrivals = self.arrivals.set_index(["network", "station", "phase"])
+        arrivals = self.arrivals.set_index(["network", "station", "phase", "event_id"])
         arrivals = arrivals.sort_index()
 
         if RANK == ROOT_RANK:
@@ -1216,6 +1299,8 @@ class InversionIterator(object):
             events = self.events.set_index("event_id")
             updated_arrivals = pd.DataFrame()
 
+            last_path = None
+
             while True:
 
                 # Request an event
@@ -1228,31 +1313,31 @@ class InversionIterator(object):
                     break
 
 
-                network, station, phase = item
-                logger.debug(f"Updating {phase}-wave residuals for {network}.{station}.")
+                network, station, phase, event_id = item
 
                 path = os.path.join(traveltime_dir, f"{network}.{station}.{phase}.npz")
-                traveltime = pykonal.fields.load(path)
 
-                _arrivals = arrivals.loc[(network, station, phase)]
-                _arrivals = _arrivals.set_index("event_id")
+                if path != last_path:
 
-                for event_id, arrival in _arrivals.iterrows():
-                    arrival_time = arrival["time"]
-                    origin_time = events.loc[event_id, "time"]
-                    coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
-                    coords = geo2sph(coords)
-                    residual = arrival_time - (origin_time + traveltime.value(coords))
-                    arrival = dict(
-                        network=network,
-                        station=station,
-                        phase=phase,
-                        event_id=event_id,
-                        time=arrival_time,
-                        residual=residual
-                    )
-                    arrival = pd.DataFrame([arrival])
-                    updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
+                    traveltime = pykonal.fields.load(path)
+                    last_path = path
+
+                arrival_time = arrivals.loc[(network, station, phase, event_id), "time"]
+
+                origin_time = events.loc[event_id, "time"]
+                coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
+                coords = geo2sph(coords)
+                residual = arrival_time - (origin_time + traveltime.value(coords))
+                arrival = dict(
+                    network=network,
+                    station=station,
+                    phase=phase,
+                    event_id=event_id,
+                    time=arrival_time,
+                    residual=residual
+                )
+                arrival = pd.DataFrame([arrival])
+                updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
 
         self.synchronize(attrs=["arrivals"])
 
