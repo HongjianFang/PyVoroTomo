@@ -1,3 +1,4 @@
+import glob
 import h5py as h5
 import KDEpy as kp
 import mpi4py.MPI as MPI
@@ -20,6 +21,7 @@ from . import _utilities
 logger = _utilities.get_logger(f"__main__.{__name__}")
 
 # Define aliases.
+TraveltimeInventory = pykonal.inventory.TraveltimeInventory
 PointSourceSolver = pykonal.solver.PointSourceSolver
 geo2sph = pykonal.transformations.geo2sph
 sph2geo = pykonal.transformations.sph2geo
@@ -595,7 +597,6 @@ class InversionIterator(object):
         logger.info("Tracing rays.")
 
         raypath_dir = self.raypath_dir
-        traveltime_dir = self.traveltime_dir
         arrivals = self.sampled_arrivals
         arrivals = arrivals.set_index(["network", "station"])
         arrivals = arrivals.sort_index()
@@ -612,50 +613,53 @@ class InversionIterator(object):
             events = events.set_index("event_id")
             events["idx"] = range(len(events))
 
-            while True:
+            _path = os.path.join(self.scratch_dir, "traveltime_inventory.h5")
+            with TraveltimeInventory(_path, mode="r") as traveltime_inventory:
 
-                item = self._request_dispatch()
+                while True:
 
-                if item is None:
-                    logger.debug("Sentinel received.")
-                    break
+                    item = self._request_dispatch()
 
-                network, station = item
-                filename = f"{network}.{station}.{phase}"
+                    if item is None:
+                        logger.debug("Sentinel received.")
+                        break
 
-                path = os.path.join(traveltime_dir, filename + ".npz")
-                traveltime = pykonal.fields.load(path)
+                    network, station = item
+                    handle = "/".join([network, station, phase])
 
-                path = os.path.join(raypath_dir, filename + ".h5")
-                raypath_file = h5.File(path, mode="a")
+                    traveltime = traveltime_inventory.read(handle)
 
-                if phase not in raypath_file:
-                    dtype = h5.vlen_dtype(_constants.DTYPE_REAL)
-                    dataset = raypath_file.create_dataset(
-                        phase,
-                        (3, len(events),),
-                        dtype=dtype
-                    )
-                else:
-                    dataset = raypath_file[phase]
+                    filename = ".".join([network, station, phase])
+                    path = os.path.join(raypath_dir, filename + ".h5")
+                    raypath_file = h5.File(path, mode="a")
 
-                event_ids = arrivals.loc[(network, station), "event_id"].values
+                    if phase not in raypath_file:
+                        dtype = h5.vlen_dtype(_constants.DTYPE_REAL)
+                        dataset = raypath_file.create_dataset(
+                            phase,
+                            (3, len(events),),
+                            dtype=dtype
+                        )
+                    else:
+                        dataset = raypath_file[phase]
 
-                for event_id in event_ids:
+                    event_ids = arrivals.loc[(network, station), "event_id"].values
 
-                    event = events.loc[event_id]
-                    idx = int(event["idx"])
+                    for event_id in event_ids:
 
-                    if np.stack(dataset[:, idx]).size != 0:
-                        continue
+                        event = events.loc[event_id]
+                        idx = int(event["idx"])
 
-                    columns = ["latitude", "longitude", "depth"]
-                    coords = event[columns]
-                    coords = geo2sph(coords)
-                    raypath = traveltime.trace_ray(coords)
-                    dataset[:, idx] = raypath.T.copy()
+                        if np.stack(dataset[:, idx]).size != 0:
+                            continue
 
-                raypath_file.close()
+                        columns = ["latitude", "longitude", "depth"]
+                        coords = event[columns]
+                        coords = geo2sph(coords)
+                        raypath = traveltime.trace_ray(coords)
+                        dataset[:, idx] = raypath.T.copy()
+
+                    raypath_file.close()
 
         COMM.barrier()
 
@@ -851,7 +855,20 @@ class InversionIterator(object):
                         traveltime_dir,
                         f"{network}.{station}.{phase}.npz"
                     )
-                    solver.tt.savez(path)
+                    solver.tt.to_hdf(path)
+
+        COMM.barrier()
+
+        if RANK == ROOT_RANK:
+
+            path = os.path.join(self.scratch_dir, "traveltime_inventory.h5")
+
+            with TraveltimeInventory(path, mode="w") as tt_inventory:
+
+                pattern = os.path.join(traveltime_dir, "*.h5")
+                paths = glob.glob(pattern)
+                paths = sorted(paths)
+                tt_inventory.merge(paths)
 
         COMM.barrier()
 
@@ -1176,15 +1193,11 @@ class InversionIterator(object):
 
 
             # Initialize EQLocator object.
+            _path = os.path.join(self.scratch_dir, "traveltime_inventory.h5")
             locator = pykonal.locate.EQLocator(
                 station_dict(self.stations),
-                tt_dir=traveltime_dir
+                _path
             )
-            locator.grid.min_coords     = self.pwave_model.min_coords
-            locator.grid.node_intervals = self.pwave_model.node_intervals
-            locator.grid.npts           = self.pwave_model.npts
-            locator.pwave_velocity      = self.pwave_model.values
-            locator.swave_velocity      = self.swave_model.values
 
             # Create some aliases for configuration-file parameters.
             dlat = self.cfg["relocate"]["dlat"]
@@ -1192,7 +1205,19 @@ class InversionIterator(object):
             dz = self.cfg["relocate"]["ddepth"]
             dt = self.cfg["relocate"]["dtime"]
 
-            events = pd.DataFrame()
+            # Convert configuration-file parameters from geographic to
+            # spherical coordinates
+            dtheta = np.radians(dlat)
+            dphi = np.radians(dlon)
+
+            # Initialize the search region.
+            delta = np.array([dz, dtheta, dphi, dt])
+
+            events = self.events
+            events = events.set_index("event_id")
+
+            # Initialize empty DataFrame for updated event locations.
+            relocated_events = pd.DataFrame()
 
             while True:
 
@@ -1201,27 +1226,37 @@ class InversionIterator(object):
 
                 if event_id is None:
                     logger.debug("Received sentinel, gathering events.")
-                    COMM.gather(events, root=ROOT_RANK)
+                    COMM.gather(relocated_events, root=ROOT_RANK)
 
                     break
 
                 logger.debug(f"Received event ID #{event_id}")
 
-                # Clear arrivals from previous event.
-                locator.clear_arrivals()
-                locator.add_arrivals(arrival_dict(self.arrivals, event_id))
-                locator.load_traveltimes()
-                loc = locator.locate(dlat=dlat, dlon=dlon, dz=dz, dt=dt)
+                # Extract the initial event location and convert to
+                # spherical coordinates.
+                _columns = ["latitude", "longitude", "depth", "time"]
+                initial = events.loc[event_id, _columns].values
+                initial[:3] = geo2sph(initial[:3])
 
-                # Get residual RMS, reformat result, and append to events
-                # DataFrame.
+                # Clear previous event's arrivals from EQLocator.
+                locator.clear_arrivals()
+
+                # Update EQLocator with arrivals for this event.
+                _arrivals = arrival_dict(self.arrivals, event_id)
+                locator.add_arrivals(_arrivals)
+
+                # Relocate the event.
+                loc = locator.locate(initial, delta)
+
+                # Get residual RMS, reformat result, and append to
+                # relocated_events DataFrame.
                 rms = locator.rms(loc)
                 loc[:3] = sph2geo(loc[:3])
                 event = pd.DataFrame(
                     [np.concatenate((loc, [rms, event_id]))],
                     columns=columns
                 )
-                events = events.append(event, ignore_index=True)
+                relocated_events = relocated_events.append(event, ignore_index=True)
 
         self.synchronize(attrs=["events"])
 
@@ -1431,7 +1466,6 @@ class InversionIterator(object):
 
         logger.info("Updating arrival residuals.")
 
-        traveltime_dir = self.traveltime_dir
         arrivals = self.arrivals.set_index(["network", "station", "phase", "event_id"])
         arrivals = arrivals.sort_index()
 
@@ -1449,45 +1483,47 @@ class InversionIterator(object):
             events = self.events.set_index("event_id")
             updated_arrivals = pd.DataFrame()
 
-            last_path = None
+            last_handle = None
 
-            while True:
+            _path = os.path.join(self.scratch_dir, "traveltime_inventory.h5")
+            with TraveltimeInventory(_path, mode="r") as traveltime_inventory:
 
-                # Request an event
-                item = self._request_dispatch()
+                while True:
 
-                if item is None:
-                    logger.debug("Received sentinel. Gathering arrivals.")
-                    COMM.gather(updated_arrivals, root=ROOT_RANK)
+                    # Request an event
+                    item = self._request_dispatch()
 
-                    break
+                    if item is None:
+                        logger.debug("Received sentinel. Gathering arrivals.")
+                        COMM.gather(updated_arrivals, root=ROOT_RANK)
+
+                        break
 
 
-                network, station, phase, event_id = item
+                    network, station, phase, event_id = item
+                    handle = "/".join([network, station, phase])
 
-                path = os.path.join(traveltime_dir, f"{network}.{station}.{phase}.npz")
+                    if handle != last_handle:
 
-                if path != last_path:
+                        traveltime = traveltime_inventory.read(handle)
+                        last_handle = handle
 
-                    traveltime = pykonal.fields.load(path)
-                    last_path = path
+                    arrival_time = arrivals.loc[(network, station, phase, event_id), "time"]
 
-                arrival_time = arrivals.loc[(network, station, phase, event_id), "time"]
-
-                origin_time = events.loc[event_id, "time"]
-                coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
-                coords = geo2sph(coords)
-                residual = arrival_time - (origin_time + traveltime.value(coords))
-                arrival = dict(
-                    network=network,
-                    station=station,
-                    phase=phase,
-                    event_id=event_id,
-                    time=arrival_time,
-                    residual=residual
-                )
-                arrival = pd.DataFrame([arrival])
-                updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
+                    origin_time = events.loc[event_id, "time"]
+                    coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
+                    coords = geo2sph(coords)
+                    residual = arrival_time - (origin_time + traveltime.value(coords))
+                    arrival = dict(
+                        network=network,
+                        station=station,
+                        phase=phase,
+                        event_id=event_id,
+                        time=arrival_time,
+                        residual=residual
+                    )
+                    arrival = pd.DataFrame([arrival])
+                    updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
 
         self.synchronize(attrs=["arrivals"])
 
@@ -1541,7 +1577,7 @@ def arrival_dict(dataframe, event_id):
     dataframe = dataframe.loc[event_id, fields]
 
     _arrival_dict = {
-        (f"{network}.{station}", phase): timestamp
+        (network, station, phase): timestamp
         for network, station, phase, timestamp in dataframe.values
     }
 
@@ -1582,7 +1618,7 @@ def station_dict(dataframe):
     dataframe = dataframe.set_index(["network", "station"])
 
     _station_dict = {
-        f"{network}.{station}": geo2sph(
+        (network, station): geo2sph(
             dataframe.loc[
                 (network, station),
                 ["latitude", "longitude", "depth"]

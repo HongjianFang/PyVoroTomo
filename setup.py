@@ -20,7 +20,7 @@ required        = [
     "mpi4py",
     "numpy",
     "pandas",
-    "pykonal>=0.2.3b",
+    "pykonal>=0.3.0a",
     "tables",
     "scipy"
 ]
