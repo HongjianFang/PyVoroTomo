@@ -454,7 +454,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, phase, nvoronoi):
+    def _generate_voronoi_cells(self, phase, nvoronoi,nvoronoi_base = 0):
         """
         Generate Voronoi cells using k-medians clustering of raypaths.
         """
@@ -462,6 +462,11 @@ class InversionIterator(object):
         logger.debug(f"Generating {nvoronoi} Voronoi cells using k-medians clustering.")
 
         if RANK == ROOT_RANK:
+
+            min_coords = self.pwave_model.min_coords
+            max_coords = self.pwave_model.max_coords
+            delta = max_coords - min_coords
+            basecells = np.random.rand(nvoronoi_base, 3) * delta + min_coords
 
             k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
@@ -503,6 +508,8 @@ class InversionIterator(object):
             points = points[idxs]
 
             medians = _clustering.k_medians(nvoronoi, points)
+
+            medians = np.vstack([basecells,medians])
 
             self.voronoi_cells = medians
 
@@ -856,6 +863,7 @@ class InversionIterator(object):
         niter = self.cfg["algorithm"]["niter"]
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
         nreal = self.cfg["algorithm"]["nreal"]
+        #LinReloc = self.cfg["locate"]["LinReloc"]
 
         self.iiter += 1
 
@@ -878,6 +886,13 @@ class InversionIterator(object):
             self.update_model(phase)
             self.save_model(phase)
         self.compute_traveltime_lookup_tables()
+
+        # add 'LinReloc' to the cfg file
+        if 1:#LinReloc:
+            self.relocate_events_linear()
+        else:
+            self.relocate_events()
+
         self.purge_raypaths()
         self.relocate_events()
         self.update_arrival_residuals()
@@ -992,6 +1007,126 @@ class InversionIterator(object):
 
         return (True)
 
+    @_utilities.log_errors(logger)
+    def relocate_events_linear(self,niter_linloc=1):
+        """
+        Relocate all events based on linear inversion and update the "events" attribute.
+        """
+
+        logger.info("Relocating events with linear inversion.")
+        raypath_dir = self.raypath_dir
+
+        if RANK == ROOT_RANK:
+            events = self.events.set_index("event_id")
+            events["idx"] = range(len(events))
+            arrivals = self.arrivals
+
+            for iter_loc in range(niter_linloc):
+                column_idxs = np.array([],dtype=int)
+                nonzero_values = np.array([],dtype=float)
+                nsegments = np.array([],dtype=int)
+                residuals = np.array([],dtype=float)
+
+                for phase in self.phases:
+                    if phase == "P":
+                        model = self.pwave_model
+                    elif phase == "S":
+                        model = self.swave_model
+
+                    arrivalssub = arrivals[arrivals['phase']==phase]
+                    arrivalssub = arrivalssub.set_index(["network", "station"])
+                    idx_reloc = arrivalssub.index.unique()
+                    for network, station in idx_reloc:
+
+                        _arrivals = arrivalssub.loc[(network, station)]
+                        _arrivals = _arrivals.set_index("event_id")
+
+                        filename = f"{network}.{station}.{phase}.h5"
+                        path = os.path.join(raypath_dir, filename)
+                        if not os.path.isfile(path):
+                            continue
+                        raypath_file = h5.File(path, mode="r")
+
+                        for event_id, arrival in _arrivals.iterrows():
+
+                            event = events.loc[event_id]
+                            idx = int(event["idx"])
+
+                            raypath = raypath_file[phase][:, idx]
+                            raypath = np.stack(raypath).T
+                            if (len(raypath)) < 10:
+                                continue
+                            dpos = np.zeros(3,)
+                            dpos[0] = raypath[-2,0]-raypath[-1,0]
+                            dpos[1] = raypath[-1,0]*(raypath[-2,1]-raypath[-1,1])
+                            dpos[2] = raypath[-1,0]*(raypath[-2,2]-raypath[-1,2])*np.cos(raypath[-1,1])
+
+                            dpos = dpos/np.sqrt(np.sum(dpos**2))
+                            event_coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
+                            event_coords = geo2sph(event_coords)
+                            vel_hypo = model.value(event_coords)
+                            dtdx = np.zeros(4,)
+                            dtdx[:-1] = dpos/vel_hypo
+                            dtdx[-1] = 1.0
+                            _column_idxs = np.arange(idx*4,idx*4+4)
+                            _nonnzero_values = dtdx
+
+                            column_idxs = np.append(column_idxs, _column_idxs)
+                            nonzero_values = np.append(nonzero_values,_nonnzero_values)
+                            nsegments = np.append(nsegments, len(_column_idxs))
+                            residuals = np.append(residuals, arrival["residual"])
+
+                        raypath_file.close()
+                row_idxs = [
+                    i for i in range(len(nsegments))
+                      for j in range(nsegments[i])
+                ]
+                row_idxs = np.array(row_idxs)
+        
+                ncol = (events['idx'].max()+1)*4
+
+                Gmatrix = scipy.sparse.coo_matrix(
+                    (nonzero_values, (row_idxs, column_idxs)),
+                    shape=(len(nsegments), ncol)
+                )
+
+                       
+                # call lsmr for relocating
+                # add three more parameters into cfg file,
+                # 'niter_linloc','damp_reloc' and 'maxiter'
+                damp = 0.1#self.cfg["locate"]["damp_reloc"]
+                atol = self.cfg["algorithm"]["atol"]
+                btol = self.cfg["algorithm"]["btol"]
+                conlim = self.cfg["algorithm"]["conlim"]
+                maxiter = 10#self.cfg["locate"]["maxiter"]
+                
+                result = scipy.sparse.linalg.lsmr(
+                    Gmatrix,
+                    residuals,
+                    damp,
+                    atol,
+                    btol,
+                    conlim,
+                    maxiter,
+                    show=False
+                )
+                x, istop, itn, normr, normar, norma, conda, normx = result
+
+                # change rad to degree
+                drad = x[::4]
+                dlat = x[1::4]*180.0/(np.pi*(_constants.EARTH_RADIUS-events['depth']))
+                dlon = x[2::4]*180.0/(np.pi*(_constants.EARTH_RADIUS-events['depth']))/np.cos(np.radians(events['latitude']))
+                dorigin = x[3::4]
+
+                #update events
+                events['latitude'] = events['latitude']+dlat
+                events['longitude'] = events['longitude']-dlon
+                events['depth'] = events['depth']+drad
+                events['time'] = events['time']+dorigin
+            events = events.reset_index()
+            self.events = events
+        self.synchronize(attrs=["events"])
+        return (True)
 
     @_utilities.log_errors(logger)
     def relocate_events(self):
