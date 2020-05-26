@@ -313,7 +313,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _compute_sensitivity_matrix(self, phase, nvoronoi):
+    def _compute_sensitivity_matrix(self, phase):
         """
         Compute the sensitivity matrix.
         """
@@ -328,6 +328,9 @@ class InversionIterator(object):
         arrivals = arrivals.sort_index()
 
         if RANK == ROOT_RANK:
+
+            nvoronoi = len(self.voronoi_cells)
+
             ids = arrivals.index.unique()
             self._dispatch(ids)
 
@@ -454,19 +457,22 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, phase, nvoronoi,nvoronoi_base = 0):
+    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi):
         """
         Generate Voronoi cells using k-medians clustering of raypaths.
         """
 
-        logger.debug(f"Generating {nvoronoi} Voronoi cells using k-medians clustering.")
+        logger.debug(
+            f"Generating {kvoronoi} Voronoi cells using k-medians clustering "
+            f"and {nvoronoi} randomly distributed base Voronoi cells."
+        )
 
         if RANK == ROOT_RANK:
 
             min_coords = self.pwave_model.min_coords
             max_coords = self.pwave_model.max_coords
             delta = max_coords - min_coords
-            basecells = np.random.rand(nvoronoi_base, 3) * delta + min_coords
+            base_cells = np.random.rand(nvoronoi, 3) * delta + min_coords
 
             k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
@@ -507,11 +513,9 @@ class InversionIterator(object):
             idxs = np.random.choice(idxs, k_medians_npts, replace=False)
             points = points[idxs]
 
-            medians = _clustering.k_medians(nvoronoi, points)
+            medians = _clustering.k_medians(kvoronoi, points)
 
-            medians = np.vstack([basecells,medians])
-
-            self.voronoi_cells = medians
+            self.voronoi_cells = np.vstack([base_cells, medians])
 
         self.synchronize(attrs=["voronoi_cells"])
 
@@ -763,7 +767,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _update_projection_matrix(self, nvoronoi):
+    def _update_projection_matrix(self):
         """
         Update the projection matrix using the current Voronoi cells.
         """
@@ -771,6 +775,9 @@ class InversionIterator(object):
         logger.info("Updating projection matrix")
 
         if RANK == ROOT_RANK:
+
+            nvoronoi = len(self.voronoi_cells)
+
             voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
             tree = scipy.spatial.cKDTree(voronoi_cells)
             nodes = self.pwave_model.nodes.reshape(-1, 3)
@@ -861,9 +868,10 @@ class InversionIterator(object):
         output_dir = self.argc.output_dir
 
         niter = self.cfg["algorithm"]["niter"]
+        kvoronoi = self.cfg["algorithm"]["kvoronoi"]
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
         nreal = self.cfg["algorithm"]["nreal"]
-        #LinReloc = self.cfg["locate"]["LinReloc"]
+        relocation_method = self.cfg["relocate"]["method"]
 
         self.iiter += 1
 
@@ -878,23 +886,17 @@ class InversionIterator(object):
                 self._trace_rays(phase)
                 self._generate_voronoi_cells(
                     phase,
+                    kvoronoi,
                     nvoronoi
                 )
-                self._update_projection_matrix(nvoronoi)
-                self._compute_sensitivity_matrix(phase, nvoronoi)
+                self._update_projection_matrix()
+                self._compute_sensitivity_matrix(phase)
                 self._compute_model_update(phase)
             self.update_model(phase)
             self.save_model(phase)
         self.compute_traveltime_lookup_tables()
-
-        # add 'LinReloc' to the cfg file
-        if 1:#LinReloc:
-            self.relocate_events_linear()
-        else:
-            self.relocate_events()
-
+        self.relocate_events(method=relocation_method)
         self.purge_raypaths()
-        self.relocate_events()
         self.update_arrival_residuals()
         self.save_events()
 
@@ -1008,7 +1010,20 @@ class InversionIterator(object):
         return (True)
 
     @_utilities.log_errors(logger)
-    def relocate_events_linear(self,niter_linloc=1):
+    def relocate_events(self, method):
+        if method == "LINEAR":
+            self._relocate_events_linear()
+        elif method == "DE":
+            self._relocate_events_de()
+        else:
+            raise (
+                ValueError(
+                    "Relocation method must be either \"linear\" or \"DE\"."
+                )
+            )
+
+    @_utilities.log_errors(logger)
+    def _relocate_events_linear(self, niter_linloc=1):
         """
         Relocate all events based on linear inversion and update the "events" attribute.
         """
@@ -1033,7 +1048,7 @@ class InversionIterator(object):
                     elif phase == "S":
                         model = self.swave_model
 
-                    arrivalssub = arrivals[arrivals['phase']==phase]
+                    arrivalssub = arrivals[arrivals["phase"]==phase]
                     arrivalssub = arrivalssub.set_index(["network", "station"])
                     idx_reloc = arrivalssub.index.unique()
                     for network, station in idx_reloc:
@@ -1082,24 +1097,24 @@ class InversionIterator(object):
                       for j in range(nsegments[i])
                 ]
                 row_idxs = np.array(row_idxs)
-        
-                ncol = (events['idx'].max()+1)*4
+
+                ncol = (events["idx"].max()+1)*4
 
                 Gmatrix = scipy.sparse.coo_matrix(
                     (nonzero_values, (row_idxs, column_idxs)),
                     shape=(len(nsegments), ncol)
                 )
 
-                       
+
                 # call lsmr for relocating
                 # add three more parameters into cfg file,
-                # 'niter_linloc','damp_reloc' and 'maxiter'
-                damp = 0.1#self.cfg["locate"]["damp_reloc"]
-                atol = self.cfg["algorithm"]["atol"]
-                btol = self.cfg["algorithm"]["btol"]
-                conlim = self.cfg["algorithm"]["conlim"]
-                maxiter = 10#self.cfg["locate"]["maxiter"]
-                
+                # "niter_linloc","damp_reloc" and "maxiter"
+                atol    = self.cfg["relocate"]["atol"]
+                btol    = self.cfg["relocate"]["btol"]
+                conlim  = self.cfg["relocate"]["conlim"]
+                damp    = self.cfg["relocate"]["damp"]
+                maxiter = self.cfg["relocate"]["maxiter"]
+
                 result = scipy.sparse.linalg.lsmr(
                     Gmatrix,
                     residuals,
@@ -1114,22 +1129,22 @@ class InversionIterator(object):
 
                 # change rad to degree
                 drad = x[::4]
-                dlat = x[1::4]*180.0/(np.pi*(_constants.EARTH_RADIUS-events['depth']))
-                dlon = x[2::4]*180.0/(np.pi*(_constants.EARTH_RADIUS-events['depth']))/np.cos(np.radians(events['latitude']))
+                dlat = x[1::4]*180.0/(np.pi*(_constants.EARTH_RADIUS-events["depth"]))
+                dlon = x[2::4]*180.0/(np.pi*(_constants.EARTH_RADIUS-events["depth"]))/np.cos(np.radians(events["latitude"]))
                 dorigin = x[3::4]
 
                 #update events
-                events['latitude'] = events['latitude']+dlat
-                events['longitude'] = events['longitude']-dlon
-                events['depth'] = events['depth']+drad
-                events['time'] = events['time']+dorigin
+                events["latitude"] = events["latitude"]+dlat
+                events["longitude"] = events["longitude"]-dlon
+                events["depth"] = events["depth"]+drad
+                events["time"] = events["time"]+dorigin
             events = events.reset_index()
             self.events = events
         self.synchronize(attrs=["events"])
         return (True)
 
     @_utilities.log_errors(logger)
-    def relocate_events(self):
+    def _relocate_events_de(self):
         """
         Relocate all events and update the "events" attribute.
         """
@@ -1172,10 +1187,10 @@ class InversionIterator(object):
             locator.swave_velocity      = self.swave_model.values
 
             # Create some aliases for configuration-file parameters.
-            dlat = self.cfg["locate"]["dlat"]
-            dlon = self.cfg["locate"]["dlon"]
-            dz = self.cfg["locate"]["ddepth"]
-            dt = self.cfg["locate"]["dtime"]
+            dlat = self.cfg["relocate"]["dlat"]
+            dlon = self.cfg["relocate"]["dlon"]
+            dz = self.cfg["relocate"]["ddepth"]
+            dt = self.cfg["relocate"]["dtime"]
 
             events = pd.DataFrame()
 

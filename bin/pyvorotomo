@@ -10,11 +10,11 @@ An MPI script to invert traveltime data for velocity.
 import pykonal
 
 try:
-    version_number = pykonal.__version_number__
-    if version_number != "0.2.3":
+    version = pykonal.__version_tuple__
+    if version < (0, 2, 3):
         raise (ValueError())
-except:
-    print("Invalid version of PyKonal detected. Version 0.2.3 required.")
+except ValueError:
+    print("Invalid version of PyKonal detected. Version >=0.2.3 required.")
     exit(-1)
 
 import signal
@@ -61,7 +61,16 @@ def main(argc):
 
     if argc.relocate_first is True:
         # Relocate all events.
-        inversion_iterator.relocate_events()
+        relocation_method = inversion_iterator.cfg["relocate"]["method"]
+        if relocation_method == "LINEAR":
+            raise (
+                NotImplementedError(
+                    "Relocating events before the first iteration using a "
+                    "linearized inversion has not neen implemented. Please "
+                    "use the DE relocation method or omit the -r option."
+                )
+            )
+        inversion_iterator.relocate_events(method=relocation_method)
 
     # Update arrival residuals.
     inversion_iterator.update_arrival_residuals()

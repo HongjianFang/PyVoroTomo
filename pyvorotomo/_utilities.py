@@ -250,6 +250,10 @@ def parse_cfg(configuration_file):
         "niter",
         fallback=1
     )
+    _cfg["kvoronoi"] = parser.getint(
+        "algorithm",
+        "kvoronoi"
+    )
     _cfg["nvoronoi"] = parser.getint(
         "algorithm",
         "nvoronoi"
@@ -314,23 +318,57 @@ def parse_cfg(configuration_file):
     cfg["model"] = _cfg
 
     _cfg = dict()
-    _cfg["dlat"] = parser.getfloat(
-        "locate",
-        "dlat"
-    )
-    _cfg["dlon"] = parser.getfloat(
-        "locate",
-        "dlon"
-    )
-    _cfg["ddepth"] = parser.getfloat(
-        "locate",
-        "ddepth"
-    )
-    _cfg["dtime"] = parser.getfloat(
-        "locate",
-        "dtime"
-    )
-    cfg["locate"] = _cfg
+    _cfg["method"] = parser.get(
+        "relocate",
+        "method"
+    ).upper()
+    if _cfg["method"] == "LINEAR":
+        # Parse parameters for linearized relocation.
+        _cfg["atol"] = parser.getfloat(
+            "linearized_relocation",
+            "atol"
+        )
+        _cfg["btol"] = parser.getfloat(
+            "linearized_relocation",
+            "btol"
+        )
+        _cfg["maxiter"] = parser.getint(
+            "linearized_relocation",
+            "maxiter"
+        )
+        _cfg["conlim"] = parser.getint(
+            "linearized_relocation",
+            "conlim"
+        )
+        _cfg["damp"] = parser.getfloat(
+            "linearized_relocation",
+            "damp"
+        )
+    elif _cfg["method"].upper() == "DE":
+        # Parse parameters for DE relocation.
+        _cfg["dlat"] = parser.getfloat(
+            "de_relocation",
+            "dlat"
+        )
+        _cfg["dlon"] = parser.getfloat(
+            "de_relocation",
+            "dlon"
+        )
+        _cfg["ddepth"] = parser.getfloat(
+            "de_relocation",
+            "ddepth"
+        )
+        _cfg["dtime"] = parser.getfloat(
+            "de_relocation",
+            "dtime"
+        )
+    else:
+        raise (
+            ValueError(
+                "Relocation method must be either \"linear\" or \"DE\"."
+            )
+        )
+    cfg["relocate"] = _cfg
 
     return (cfg)
 
