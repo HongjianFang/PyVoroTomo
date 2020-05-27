@@ -257,6 +257,10 @@ class InversionIterator(object):
         return (os.path.join(self.scratch_dir, "traveltimes"))
 
     @property
+    def traveltime_inventory_path(self):
+        return (os.path.join(self.scratch_dir, "traveltime_inventory.h5"))
+
+    @property
     def voronoi_cells(self):
         return (self._voronoi_cells)
 
@@ -613,7 +617,7 @@ class InversionIterator(object):
             events = events.set_index("event_id")
             events["idx"] = range(len(events))
 
-            _path = os.path.join(self.scratch_dir, "traveltime_inventory.h5")
+            _path = self.traveltime_inventory_path
             with TraveltimeInventory(_path, mode="r") as traveltime_inventory:
 
                 while True:
@@ -861,9 +865,8 @@ class InversionIterator(object):
 
         if RANK == ROOT_RANK:
 
-            path = os.path.join(self.scratch_dir, "traveltime_inventory.h5")
-
-            with TraveltimeInventory(path, mode="w") as tt_inventory:
+            _path = self.traveltime_inventory_path
+            with TraveltimeInventory(_path, mode="w") as tt_inventory:
 
                 pattern = os.path.join(traveltime_dir, "*.h5")
                 paths = glob.glob(pattern)
@@ -1193,7 +1196,7 @@ class InversionIterator(object):
 
 
             # Initialize EQLocator object.
-            _path = os.path.join(self.scratch_dir, "traveltime_inventory.h5")
+            _path = self.traveltime_inventory_path
             locator = pykonal.locate.EQLocator(
                 station_dict(self.stations),
                 _path
@@ -1485,7 +1488,7 @@ class InversionIterator(object):
 
             last_handle = None
 
-            _path = os.path.join(self.scratch_dir, "traveltime_inventory.h5")
+            _path = self.traveltime_inventory_path
             with TraveltimeInventory(_path, mode="r") as traveltime_inventory:
 
                 while True:
