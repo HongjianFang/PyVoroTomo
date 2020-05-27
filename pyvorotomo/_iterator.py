@@ -853,7 +853,7 @@ class InversionIterator(object):
                     solver.solve()
                     path = os.path.join(
                         traveltime_dir,
-                        f"{network}.{station}.{phase}.npz"
+                        f"{network}.{station}.{phase}.h5"
                     )
                     solver.tt.to_hdf(path)
 
