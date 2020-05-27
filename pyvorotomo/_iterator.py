@@ -1,4 +1,5 @@
-import h5py as h5
+import glob
+import h5py
 import KDEpy as kp
 import mpi4py.MPI as MPI
 import numpy as np
@@ -20,6 +21,7 @@ from . import _utilities
 logger = _utilities.get_logger(f"__main__.{__name__}")
 
 # Define aliases.
+TraveltimeInventory = pykonal.inventory.TraveltimeInventory
 PointSourceSolver = pykonal.solver.PointSourceSolver
 geo2sph = pykonal.transformations.geo2sph
 sph2geo = pykonal.transformations.sph2geo
@@ -44,6 +46,7 @@ class InversionIterator(object):
         self._cfg = None
         self._events = None
         self._iiter = 0
+        self._ireal = 0
         self._phases = None
         self._projection_matrix = None
         self._pwave_model = None
@@ -62,21 +65,24 @@ class InversionIterator(object):
             scratch_dir = argc.scratch_dir
             self._scratch_dir_obj = tempfile.TemporaryDirectory(dir=scratch_dir)
             self._scratch_dir = self._scratch_dir_obj.name
+
+            _tempfile = tempfile.TemporaryFile(dir=argc.scratch_dir)
+            self._f5_workspace = h5py.File(_tempfile, mode="w")
+
         self.synchronize(attrs=["scratch_dir"])
 
 
     def __del__(self):
-
+        if RANK == ROOT_RANK:
+            self._f5_workspace.close()
         shutil.rmtree(self.scratch_dir)
 
 
     def __enter__(self):
-
         return (self)
 
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
-
         self.__del__()
 
 
@@ -119,6 +125,14 @@ class InversionIterator(object):
         self._iiter = value
 
     @property
+    def ireal(self):
+        return (self._ireal)
+
+    @ireal.setter
+    def ireal(self, value):
+        self._ireal = value
+
+    @property
     def phases(self):
         return (self._phases)
 
@@ -144,27 +158,30 @@ class InversionIterator(object):
 
     @property
     def pwave_realization_stack(self):
-        if self._pwave_realization_stack is None:
-           self._pwave_realization_stack = []
-        return (self._pwave_realization_stack)
+        if RANK == ROOT_RANK:
+            if "pwave_stack" not in self._f5_workspace:
+                self._f5_workspace.create_dataset(
+                    "pwave_stack",
+                    shape=(self.cfg["algorithm"]["nreal"], *self.pwave_model.npts),
+                    dtype=_constants.DTYPE_REAL,
+                    fillvalue=np.nan
+                )
 
-    @pwave_realization_stack.setter
-    def pwave_realization_stack(self, value):
-        self._pwave_realization_stack = value
+            return (self._f5_workspace["pwave_stack"])
+
+        return (None)
 
     @property
     def pwave_variance(self) -> _picklable.ScalarField3D:
-        if self._pwave_variance is None:
-            field = _picklable.ScalarField3D(coord_sys="spherical")
-            field.min_coords = self.pwave_model.min_coords
-            field.node_intervals = self.pwave_model.node_intervals
-            field.npts = self.pwave_model.npts
-            self._pwave_variance = field
-        return (self._pwave_variance)
-
-    @pwave_variance.setter
-    def pwave_variance(self, value: _picklable.ScalarField3D):
-        self._pwave_variance = value
+        field = _picklable.ScalarField3D(coord_sys="spherical")
+        field.min_coords = self.pwave_model.min_coords
+        field.node_intervals = self.pwave_model.node_intervals
+        field.npts = self.pwave_model.npts
+        stack = self._f5_workspace["pwave_stack"]
+        stack = np.ma.masked_invalid(stack)
+        var = np.var(stack, axis=0)
+        field.values = var
+        return (field)
 
     @property
     def raypath_dir(self):
@@ -228,31 +245,38 @@ class InversionIterator(object):
 
     @property
     def swave_realization_stack(self):
-        if self._swave_realization_stack is None:
-           self._swave_realization_stack = []
-        return (self._swave_realization_stack)
+        if RANK == ROOT_RANK:
+            if "swave_stack" not in self._f5_workspace:
+                self._f5_workspace.create_dataset(
+                    "swave_stack",
+                    shape=(self.cfg["algorithm"]["nreal"], *self.pwave_model.npts),
+                    dtype=_constants.DTYPE_REAL,
+                    fillvalue=np.nan
+                )
 
-    @swave_realization_stack.setter
-    def swave_realization_stack(self, value):
-        self._swave_realization_stack = value
+            return (self._f5_workspace["swave_stack"])
+
+        return (None)
 
     @property
     def swave_variance(self) -> _picklable.ScalarField3D:
-        if self._swave_variance is None:
-            field = _picklable.ScalarField3D(coord_sys="spherical")
-            field.min_coords = self.pwave_model.min_coords
-            field.node_intervals = self.pwave_model.node_intervals
-            field.npts = self.pwave_model.npts
-            self._swave_variance = field
-        return (self._swave_variance)
-
-    @swave_variance.setter
-    def swave_variance(self, value: _picklable.ScalarField3D):
-        self._swave_variance = value
+        field = _picklable.ScalarField3D(coord_sys="spherical")
+        field.min_coords = self.swave_model.min_coords
+        field.node_intervals = self.swave_model.node_intervals
+        field.npts = self.swave_model.npts
+        stack = self._f5_workspace["swave_stack"]
+        stack = np.ma.masked_invalid(stack)
+        var = np.var(stack, axis=0)
+        field.values = var
+        return (field)
 
     @property
     def traveltime_dir(self):
         return (os.path.join(self.scratch_dir, "traveltimes"))
+
+    @property
+    def traveltime_inventory_path(self):
+        return (os.path.join(self.scratch_dir, "traveltime_inventory.h5"))
 
     @property
     def voronoi_cells(self):
@@ -305,9 +329,9 @@ class InversionIterator(object):
         velocity = np.power(slowness, -1)
 
         if phase == "P":
-            self.pwave_realization_stack.append(velocity)
+            self.pwave_realization_stack[self.ireal] = velocity
         else:
-            self.swave_realization_stack.append(velocity)
+            self.swave_realization_stack[self.ireal] = velocity
 
         return (True)
 
@@ -400,7 +424,7 @@ class InversionIterator(object):
                 # Open the raypath file.
                 filename = f"{network}.{station}.{phase}.h5"
                 path = os.path.join(raypath_dir, filename)
-                raypath_file = h5.File(path, mode="r")
+                raypath_file = h5py.File(path, mode="r")
 
                 for event_id, arrival in _arrivals.iterrows():
 
@@ -497,7 +521,7 @@ class InversionIterator(object):
                 # Open the raypath file.
                 filename = f"{network}.{station}.{phase}.h5"
                 path = os.path.join(raypath_dir, filename)
-                raypath_file = h5.File(path, mode="r")
+                raypath_file = h5py.File(path, mode="r")
 
                 event_ids = arrivals.loc[(network, station), "event_id"]
                 idxs = events.loc[event_ids, "idx"]
@@ -567,6 +591,23 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
+    @_utilities.root_only(RANK)
+    def _reset_realization_stack(self, phase):
+        """
+        Reset the realization stack values to np.nan for the given phase.
+
+        Return True upon successful completion.
+        """
+
+        phase = phase.lower()
+        handle = f"{phase}wave_realization_stack"
+        stack = getattr(self, handle)
+        stack[:] = np.nan
+
+        return (True)
+
+
+    @_utilities.log_errors(logger)
     def _sample_arrivals(self, phase):
         """
         Draw a random sample of arrivals and update the
@@ -605,7 +646,6 @@ class InversionIterator(object):
         logger.info("Tracing rays.")
 
         raypath_dir = self.raypath_dir
-        traveltime_dir = self.traveltime_dir
         arrivals = self.sampled_arrivals
         arrivals = arrivals.set_index(["network", "station"])
         arrivals = arrivals.sort_index()
@@ -622,50 +662,53 @@ class InversionIterator(object):
             events = events.set_index("event_id")
             events["idx"] = range(len(events))
 
-            while True:
+            _path = self.traveltime_inventory_path
+            with TraveltimeInventory(_path, mode="r") as traveltime_inventory:
 
-                item = self._request_dispatch()
+                while True:
 
-                if item is None:
-                    logger.debug("Sentinel received.")
-                    break
+                    item = self._request_dispatch()
 
-                network, station = item
-                filename = f"{network}.{station}.{phase}"
+                    if item is None:
+                        logger.debug("Sentinel received.")
+                        break
 
-                path = os.path.join(traveltime_dir, filename + ".npz")
-                traveltime = pykonal.fields.load(path)
+                    network, station = item
+                    handle = "/".join([network, station, phase])
 
-                path = os.path.join(raypath_dir, filename + ".h5")
-                raypath_file = h5.File(path, mode="a")
+                    traveltime = traveltime_inventory.read(handle)
 
-                if phase not in raypath_file:
-                    dtype = h5.vlen_dtype(_constants.DTYPE_REAL)
-                    dataset = raypath_file.create_dataset(
-                        phase,
-                        (3, len(events),),
-                        dtype=dtype
-                    )
-                else:
-                    dataset = raypath_file[phase]
+                    filename = ".".join([network, station, phase])
+                    path = os.path.join(raypath_dir, filename + ".h5")
+                    raypath_file = h5py.File(path, mode="a")
 
-                event_ids = arrivals.loc[(network, station), "event_id"].values
+                    if phase not in raypath_file:
+                        dtype = h5py.vlen_dtype(_constants.DTYPE_REAL)
+                        dataset = raypath_file.create_dataset(
+                            phase,
+                            (3, len(events),),
+                            dtype=dtype
+                        )
+                    else:
+                        dataset = raypath_file[phase]
 
-                for event_id in event_ids:
+                    event_ids = arrivals.loc[(network, station), "event_id"].values
 
-                    event = events.loc[event_id]
-                    idx = int(event["idx"])
+                    for event_id in event_ids:
 
-                    if np.stack(dataset[:, idx]).size != 0:
-                        continue
+                        event = events.loc[event_id]
+                        idx = int(event["idx"])
 
-                    columns = ["latitude", "longitude", "depth"]
-                    coords = event[columns]
-                    coords = geo2sph(coords)
-                    raypath = traveltime.trace_ray(coords)
-                    dataset[:, idx] = raypath.T.copy()
+                        if np.stack(dataset[:, idx]).size != 0:
+                            continue
 
-                raypath_file.close()
+                        columns = ["latitude", "longitude", "depth"]
+                        coords = event[columns]
+                        coords = geo2sph(coords)
+                        raypath = traveltime.trace_ray(coords)
+                        dataset[:, idx] = raypath.T.copy()
+
+                    raypath_file.close()
 
         COMM.barrier()
 
@@ -859,9 +902,23 @@ class InversionIterator(object):
                     solver.solve()
                     path = os.path.join(
                         traveltime_dir,
-                        f"{network}.{station}.{phase}.npz"
+                        f"{network}.{station}.{phase}.h5"
                     )
-                    solver.tt.savez(path)
+                    solver.tt.to_hdf(path)
+
+        COMM.barrier()
+
+        if RANK == ROOT_RANK:
+
+            _path = self.traveltime_inventory_path
+            with TraveltimeInventory(_path, mode="w") as tt_inventory:
+
+                pattern = os.path.join(traveltime_dir, "*.h5")
+                paths = glob.glob(pattern)
+                paths = sorted(paths)
+                tt_inventory.merge(paths)
+
+            shutil.rmtree(self.traveltime_dir)
 
         COMM.barrier()
 
@@ -889,9 +946,10 @@ class InversionIterator(object):
 
         for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
+            self._reset_realization_stack(phase)
             self._update_arrival_weights(phase)
-            for ireal in range(nreal):
-                logger.info(f"Realization #{ireal+1} (/{nreal}).")
+            for self.ireal in range(nreal):
+                logger.info(f"Realization #{self.ireal+1} (/{nreal}).")
                 self._sample_arrivals(phase)
                 self._trace_rays(phase)
                 self._generate_voronoi_cells(
@@ -1070,7 +1128,7 @@ class InversionIterator(object):
                         path = os.path.join(raypath_dir, filename)
                         if not os.path.isfile(path):
                             continue
-                        raypath_file = h5.File(path, mode="r")
+                        raypath_file = h5py.File(path, mode="r")
 
                         for event_id, arrival in _arrivals.iterrows():
 
@@ -1161,7 +1219,6 @@ class InversionIterator(object):
 
         logger.info("Relocating events.")
 
-        traveltime_dir = self.traveltime_dir
         if RANK == ROOT_RANK:
             ids = self.events["event_id"]
             self._dispatch(sorted(ids))
@@ -1186,15 +1243,11 @@ class InversionIterator(object):
 
 
             # Initialize EQLocator object.
+            _path = self.traveltime_inventory_path
             locator = pykonal.locate.EQLocator(
                 station_dict(self.stations),
-                tt_dir=traveltime_dir
+                _path
             )
-            locator.grid.min_coords     = self.pwave_model.min_coords
-            locator.grid.node_intervals = self.pwave_model.node_intervals
-            locator.grid.npts           = self.pwave_model.npts
-            locator.pwave_velocity      = self.pwave_model.values
-            locator.swave_velocity      = self.swave_model.values
 
             # Create some aliases for configuration-file parameters.
             dlat = self.cfg["relocate"]["dlat"]
@@ -1202,7 +1255,19 @@ class InversionIterator(object):
             dz = self.cfg["relocate"]["ddepth"]
             dt = self.cfg["relocate"]["dtime"]
 
-            events = pd.DataFrame()
+            # Convert configuration-file parameters from geographic to
+            # spherical coordinates
+            dtheta = np.radians(dlat)
+            dphi = np.radians(dlon)
+
+            # Initialize the search region.
+            delta = np.array([dz, dtheta, dphi, dt])
+
+            events = self.events
+            events = events.set_index("event_id")
+
+            # Initialize empty DataFrame for updated event locations.
+            relocated_events = pd.DataFrame()
 
             while True:
 
@@ -1211,27 +1276,37 @@ class InversionIterator(object):
 
                 if event_id is None:
                     logger.debug("Received sentinel, gathering events.")
-                    COMM.gather(events, root=ROOT_RANK)
+                    COMM.gather(relocated_events, root=ROOT_RANK)
 
                     break
 
                 logger.debug(f"Received event ID #{event_id}")
 
-                # Clear arrivals from previous event.
-                locator.clear_arrivals()
-                locator.add_arrivals(arrival_dict(self.arrivals, event_id))
-                locator.load_traveltimes()
-                loc = locator.locate(dlat=dlat, dlon=dlon, dz=dz, dt=dt)
+                # Extract the initial event location and convert to
+                # spherical coordinates.
+                _columns = ["latitude", "longitude", "depth", "time"]
+                initial = events.loc[event_id, _columns].values
+                initial[:3] = geo2sph(initial[:3])
 
-                # Get residual RMS, reformat result, and append to events
-                # DataFrame.
+                # Clear previous event's arrivals from EQLocator.
+                locator.clear_arrivals()
+
+                # Update EQLocator with arrivals for this event.
+                _arrivals = arrival_dict(self.arrivals, event_id)
+                locator.add_arrivals(_arrivals)
+
+                # Relocate the event.
+                loc = locator.locate(initial, delta)
+
+                # Get residual RMS, reformat result, and append to
+                # relocated_events DataFrame.
                 rms = locator.rms(loc)
                 loc[:3] = sph2geo(loc[:3])
                 event = pd.DataFrame(
                     [np.concatenate((loc, [rms, event_id]))],
                     columns=columns
                 )
-                events = events.append(event, ignore_index=True)
+                relocated_events = relocated_events.append(event, ignore_index=True)
 
         self.synchronize(attrs=["events"])
 
@@ -1365,6 +1440,11 @@ class InversionIterator(object):
     @_utilities.log_errors(logger)
     @_utilities.root_only(RANK)
     def save_model(self, phase: str) -> bool:
+        """
+        Save model data to disk for single phase.
+
+        Return True upon successful completion.
+        """
 
         logger.info(f"Saving {phase}-wave model for iteration #{self.iiter}")
 
@@ -1373,7 +1453,7 @@ class InversionIterator(object):
 
         handle = f"{phase}wave_model"
         model = getattr(self, handle)
-        model.savez(path + f".{handle}")
+        model.to_hdf(path + f".{handle}.h5")
 
         if self.iiter == 0:
 
@@ -1381,17 +1461,16 @@ class InversionIterator(object):
 
         handle = f"{phase}wave_variance"
         model = getattr(self, handle)
-        model.savez(path + f".{handle}")
+        model.to_hdf(path + f".{handle}.h5")
 
-        handle = f"{phase}wave_realization_stack"
         if self.argc.output_realizations is True:
+            handle = f"{phase}wave_realization_stack"
             stack = getattr(self, handle)
-            stack = np.stack(stack)
-            np.savez(
-                path + f".{handle}.npz",
-                data=stack
-            )
-        setattr(self, handle, None)
+            with h5py.File(path + f".{handle}.h5", mode="w") as f5:
+                f5.create_dataset(
+                    f"{phase}wave_stack",
+                    data=stack[:]
+                )
 
         return (True)
 
@@ -1441,7 +1520,6 @@ class InversionIterator(object):
 
         logger.info("Updating arrival residuals.")
 
-        traveltime_dir = self.traveltime_dir
         arrivals = self.arrivals.set_index(["network", "station", "phase", "event_id"])
         arrivals = arrivals.sort_index()
 
@@ -1459,45 +1537,47 @@ class InversionIterator(object):
             events = self.events.set_index("event_id")
             updated_arrivals = pd.DataFrame()
 
-            last_path = None
+            last_handle = None
 
-            while True:
+            _path = self.traveltime_inventory_path
+            with TraveltimeInventory(_path, mode="r") as traveltime_inventory:
 
-                # Request an event
-                item = self._request_dispatch()
+                while True:
 
-                if item is None:
-                    logger.debug("Received sentinel. Gathering arrivals.")
-                    COMM.gather(updated_arrivals, root=ROOT_RANK)
+                    # Request an event
+                    item = self._request_dispatch()
 
-                    break
+                    if item is None:
+                        logger.debug("Received sentinel. Gathering arrivals.")
+                        COMM.gather(updated_arrivals, root=ROOT_RANK)
+
+                        break
 
 
-                network, station, phase, event_id = item
+                    network, station, phase, event_id = item
+                    handle = "/".join([network, station, phase])
 
-                path = os.path.join(traveltime_dir, f"{network}.{station}.{phase}.npz")
+                    if handle != last_handle:
 
-                if path != last_path:
+                        traveltime = traveltime_inventory.read(handle)
+                        last_handle = handle
 
-                    traveltime = pykonal.fields.load(path)
-                    last_path = path
+                    arrival_time = arrivals.loc[(network, station, phase, event_id), "time"]
 
-                arrival_time = arrivals.loc[(network, station, phase, event_id), "time"]
-
-                origin_time = events.loc[event_id, "time"]
-                coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
-                coords = geo2sph(coords)
-                residual = arrival_time - (origin_time + traveltime.value(coords))
-                arrival = dict(
-                    network=network,
-                    station=station,
-                    phase=phase,
-                    event_id=event_id,
-                    time=arrival_time,
-                    residual=residual
-                )
-                arrival = pd.DataFrame([arrival])
-                updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
+                    origin_time = events.loc[event_id, "time"]
+                    coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
+                    coords = geo2sph(coords)
+                    residual = arrival_time - (origin_time + traveltime.value(coords))
+                    arrival = dict(
+                        network=network,
+                        station=station,
+                        phase=phase,
+                        event_id=event_id,
+                        time=arrival_time,
+                        residual=residual
+                    )
+                    arrival = pd.DataFrame([arrival])
+                    updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
 
         self.synchronize(attrs=["arrivals"])
 
@@ -1516,7 +1596,6 @@ class InversionIterator(object):
 
             handle = f"{phase}wave_realization_stack"
             stack = getattr(self, handle)
-            stack = np.stack(stack)
             values = np.mean(stack, axis=0)
             variance = np.var(stack, axis=0)
 
@@ -1551,7 +1630,7 @@ def arrival_dict(dataframe, event_id):
     dataframe = dataframe.loc[event_id, fields]
 
     _arrival_dict = {
-        (f"{network}.{station}", phase): timestamp
+        (network, station, phase): timestamp
         for network, station, phase, timestamp in dataframe.values
     }
 
@@ -1592,7 +1671,7 @@ def station_dict(dataframe):
     dataframe = dataframe.set_index(["network", "station"])
 
     _station_dict = {
-        f"{network}.{station}": geo2sph(
+        (network, station): geo2sph(
             dataframe.loc[
                 (network, station),
                 ["latitude", "longitude", "depth"]
