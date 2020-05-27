@@ -457,7 +457,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi):
+    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi, hvratio = 5.0):
         """
         Generate Voronoi cells using k-medians clustering of raypaths.
         """
@@ -472,7 +472,10 @@ class InversionIterator(object):
             min_coords = self.pwave_model.min_coords
             max_coords = self.pwave_model.max_coords
             delta = max_coords - min_coords
-            base_cells = np.random.rand(nvoronoi, 3) * delta + min_coords
+            base_cells_horiz = np.random.rand(nvoronoi, 2) * delta[1:] + min_coords[1:]
+            min_coords_rad = max_coords[0] -delta*hvratio
+            base_cell_rad = np.random.rand(nvoronoi,)*delta[0]*hvratio + min_coords_rad
+            base_cells = np.hstack([cells_rad,cells_horiz])
 
             k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
@@ -514,6 +517,9 @@ class InversionIterator(object):
             points = points[idxs]
 
             medians = _clustering.k_medians(kvoronoi, points)
+            medians_rad = medians[:,0].max()-(medians[:,0].max()-medians[:,0])*hvratio
+            medians_horiz = medians[:,1:]
+            medians = np.hstack([medians_rad,medians_horiz])
 
             self.voronoi_cells = np.vstack([base_cells, medians])
 
@@ -523,7 +529,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _projected_ray_idxs(self, raypath):
+    def _projected_ray_idxs(self, raypath, hvratio = 5.0):
         """
         Return the cell IDs (column IDs) of each segment of the given
         raypath and the length of each segment in counts.
@@ -531,6 +537,10 @@ class InversionIterator(object):
 
         voronoi_cells = sph2xyz(self.voronoi_cells, (0, 0, 0))
         tree = scipy.spatial.cKDTree(voronoi_cells)
+
+        raypath_rad_max = raypath[:,0].max()
+        rapath[:,0] = raypath_rad_max - (raypath_rad_max -raypath[:,0])*hvratio
+
         raypath = sph2xyz(raypath, (0, 0, 0))
         _, column_idxs = tree.query(raypath)
         column_idxs, counts = np.unique(column_idxs, return_counts=True)
