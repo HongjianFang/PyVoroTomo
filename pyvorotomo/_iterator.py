@@ -1,5 +1,5 @@
 import glob
-import h5py as h5
+import h5py
 import KDEpy as kp
 import mpi4py.MPI as MPI
 import numpy as np
@@ -46,6 +46,7 @@ class InversionIterator(object):
         self._cfg = None
         self._events = None
         self._iiter = 0
+        self._ireal = 0
         self._phases = None
         self._projection_matrix = None
         self._pwave_model = None
@@ -64,21 +65,24 @@ class InversionIterator(object):
             scratch_dir = argc.scratch_dir
             self._scratch_dir_obj = tempfile.TemporaryDirectory(dir=scratch_dir)
             self._scratch_dir = self._scratch_dir_obj.name
+
+            _tempfile = tempfile.TemporaryFile(dir=argc.scratch_dir)
+            self._f5_workspace = h5py.File(_tempfile, mode="w")
+
         self.synchronize(attrs=["scratch_dir"])
 
 
     def __del__(self):
-
+        if RANK == ROOT_RANK:
+            self._f5_workspace.close()
         shutil.rmtree(self.scratch_dir)
 
 
     def __enter__(self):
-
         return (self)
 
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
-
         self.__del__()
 
 
@@ -121,6 +125,14 @@ class InversionIterator(object):
         self._iiter = value
 
     @property
+    def ireal(self):
+        return (self._ireal)
+
+    @ireal.setter
+    def ireal(self, value):
+        self._ireal = value
+
+    @property
     def phases(self):
         return (self._phases)
 
@@ -146,27 +158,30 @@ class InversionIterator(object):
 
     @property
     def pwave_realization_stack(self):
-        if self._pwave_realization_stack is None:
-           self._pwave_realization_stack = []
-        return (self._pwave_realization_stack)
+        if RANK == ROOT_RANK:
+            if "pwave_stack" not in self._f5_workspace:
+                self._f5_workspace.create_dataset(
+                    "pwave_stack",
+                    shape=(self.cfg["algorithm"]["nreal"], *self.pwave_model.npts),
+                    dtype=_constants.DTYPE_REAL,
+                    fillvalue=np.nan
+                )
 
-    @pwave_realization_stack.setter
-    def pwave_realization_stack(self, value):
-        self._pwave_realization_stack = value
+            return (self._f5_workspace["pwave_stack"])
+
+        return (None)
 
     @property
     def pwave_variance(self) -> _picklable.ScalarField3D:
-        if self._pwave_variance is None:
-            field = _picklable.ScalarField3D(coord_sys="spherical")
-            field.min_coords = self.pwave_model.min_coords
-            field.node_intervals = self.pwave_model.node_intervals
-            field.npts = self.pwave_model.npts
-            self._pwave_variance = field
-        return (self._pwave_variance)
-
-    @pwave_variance.setter
-    def pwave_variance(self, value: _picklable.ScalarField3D):
-        self._pwave_variance = value
+        field = _picklable.ScalarField3D(coord_sys="spherical")
+        field.min_coords = self.pwave_model.min_coords
+        field.node_intervals = self.pwave_model.node_intervals
+        field.npts = self.pwave_model.npts
+        stack = self._f5_workspace["pwave_stack"]
+        stack = np.ma.masked_invalid(stack)
+        var = np.var(stack, axis=0)
+        field.values = var
+        return (field)
 
     @property
     def raypath_dir(self):
@@ -230,27 +245,30 @@ class InversionIterator(object):
 
     @property
     def swave_realization_stack(self):
-        if self._swave_realization_stack is None:
-           self._swave_realization_stack = []
-        return (self._swave_realization_stack)
+        if RANK == ROOT_RANK:
+            if "swave_stack" not in self._f5_workspace:
+                self._f5_workspace.create_dataset(
+                    "swave_stack",
+                    shape=(self.cfg["algorithm"]["nreal"], *self.pwave_model.npts),
+                    dtype=_constants.DTYPE_REAL,
+                    fillvalue=np.nan
+                )
 
-    @swave_realization_stack.setter
-    def swave_realization_stack(self, value):
-        self._swave_realization_stack = value
+            return (self._f5_workspace["swave_stack"])
+
+        return (None)
 
     @property
     def swave_variance(self) -> _picklable.ScalarField3D:
-        if self._swave_variance is None:
-            field = _picklable.ScalarField3D(coord_sys="spherical")
-            field.min_coords = self.pwave_model.min_coords
-            field.node_intervals = self.pwave_model.node_intervals
-            field.npts = self.pwave_model.npts
-            self._swave_variance = field
-        return (self._swave_variance)
-
-    @swave_variance.setter
-    def swave_variance(self, value: _picklable.ScalarField3D):
-        self._swave_variance = value
+        field = _picklable.ScalarField3D(coord_sys="spherical")
+        field.min_coords = self.swave_model.min_coords
+        field.node_intervals = self.swave_model.node_intervals
+        field.npts = self.swave_model.npts
+        stack = self._f5_workspace["swave_stack"]
+        stack = np.ma.masked_invalid(stack)
+        var = np.var(stack, axis=0)
+        field.values = var
+        return (field)
 
     @property
     def traveltime_dir(self):
@@ -311,9 +329,9 @@ class InversionIterator(object):
         velocity = np.power(slowness, -1)
 
         if phase == "P":
-            self.pwave_realization_stack.append(velocity)
+            self.pwave_realization_stack[self.ireal] = velocity
         else:
-            self.swave_realization_stack.append(velocity)
+            self.swave_realization_stack[self.ireal] = velocity
 
         return (True)
 
@@ -406,7 +424,7 @@ class InversionIterator(object):
                 # Open the raypath file.
                 filename = f"{network}.{station}.{phase}.h5"
                 path = os.path.join(raypath_dir, filename)
-                raypath_file = h5.File(path, mode="r")
+                raypath_file = h5py.File(path, mode="r")
 
                 for event_id, arrival in _arrivals.iterrows():
 
@@ -500,7 +518,7 @@ class InversionIterator(object):
                 # Open the raypath file.
                 filename = f"{network}.{station}.{phase}.h5"
                 path = os.path.join(raypath_dir, filename)
-                raypath_file = h5.File(path, mode="r")
+                raypath_file = h5py.File(path, mode="r")
 
                 event_ids = arrivals.loc[(network, station), "event_id"]
                 idxs = events.loc[event_ids, "idx"]
@@ -560,6 +578,23 @@ class InversionIterator(object):
         )
 
         return (item)
+
+
+    @_utilities.log_errors(logger)
+    @_utilities.root_only(RANK)
+    def _reset_realization_stack(self, phase):
+        """
+        Reset the realization stack values to np.nan for the given phase.
+
+        Return True upon successful completion.
+        """
+
+        phase = phase.lower()
+        handle = f"{phase}wave_realization_stack"
+        stack = getattr(self, handle)
+        stack[:] = np.nan
+
+        return (True)
 
 
     @_utilities.log_errors(logger)
@@ -635,10 +670,10 @@ class InversionIterator(object):
 
                     filename = ".".join([network, station, phase])
                     path = os.path.join(raypath_dir, filename + ".h5")
-                    raypath_file = h5.File(path, mode="a")
+                    raypath_file = h5py.File(path, mode="a")
 
                     if phase not in raypath_file:
-                        dtype = h5.vlen_dtype(_constants.DTYPE_REAL)
+                        dtype = h5py.vlen_dtype(_constants.DTYPE_REAL)
                         dataset = raypath_file.create_dataset(
                             phase,
                             (3, len(events),),
@@ -873,6 +908,8 @@ class InversionIterator(object):
                 paths = sorted(paths)
                 tt_inventory.merge(paths)
 
+            shutil.rmtree(self.traveltime_dir)
+
         COMM.barrier()
 
         return (True)
@@ -899,9 +936,10 @@ class InversionIterator(object):
 
         for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
+            self._reset_realization_stack(phase)
             self._update_arrival_weights(phase)
-            for ireal in range(nreal):
-                logger.info(f"Realization #{ireal+1} (/{nreal}).")
+            for self.ireal in range(nreal):
+                logger.info(f"Realization #{self.ireal+1} (/{nreal}).")
                 self._sample_arrivals(phase)
                 self._trace_rays(phase)
                 self._generate_voronoi_cells(
@@ -1080,7 +1118,7 @@ class InversionIterator(object):
                         path = os.path.join(raypath_dir, filename)
                         if not os.path.isfile(path):
                             continue
-                        raypath_file = h5.File(path, mode="r")
+                        raypath_file = h5py.File(path, mode="r")
 
                         for event_id, arrival in _arrivals.iterrows():
 
@@ -1171,7 +1209,6 @@ class InversionIterator(object):
 
         logger.info("Relocating events.")
 
-        traveltime_dir = self.traveltime_dir
         if RANK == ROOT_RANK:
             ids = self.events["event_id"]
             self._dispatch(sorted(ids))
@@ -1393,6 +1430,11 @@ class InversionIterator(object):
     @_utilities.log_errors(logger)
     @_utilities.root_only(RANK)
     def save_model(self, phase: str) -> bool:
+        """
+        Save model data to disk for single phase.
+
+        Return True upon successful completion.
+        """
 
         logger.info(f"Saving {phase}-wave model for iteration #{self.iiter}")
 
@@ -1401,7 +1443,7 @@ class InversionIterator(object):
 
         handle = f"{phase}wave_model"
         model = getattr(self, handle)
-        model.savez(path + f".{handle}")
+        model.to_hdf(path + f".{handle}.h5")
 
         if self.iiter == 0:
 
@@ -1409,17 +1451,16 @@ class InversionIterator(object):
 
         handle = f"{phase}wave_variance"
         model = getattr(self, handle)
-        model.savez(path + f".{handle}")
+        model.to_hdf(path + f".{handle}.h5")
 
-        handle = f"{phase}wave_realization_stack"
         if self.argc.output_realizations is True:
+            handle = f"{phase}wave_realization_stack"
             stack = getattr(self, handle)
-            stack = np.stack(stack)
-            np.savez(
-                path + f".{handle}.npz",
-                data=stack
-            )
-        setattr(self, handle, None)
+            with h5py.File(path + f".{handle}.h5", mode="w") as f5:
+                f5.create_dataset(
+                    f"{phase}wave_stack",
+                    data=stack[:]
+                )
 
         return (True)
 
@@ -1545,7 +1586,6 @@ class InversionIterator(object):
 
             handle = f"{phase}wave_realization_stack"
             stack = getattr(self, handle)
-            stack = np.stack(stack)
             values = np.mean(stack, axis=0)
             variance = np.var(stack, axis=0)
 
