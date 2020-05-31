@@ -86,10 +86,10 @@ def parse_velocity_models(cfg):
 
 
     path = cfg["model"]["initial_pwave_path"]
-    _pwave_model = pykonal.fields.load(path)
+    _pwave_model = pykonal.fields.read_hdf(path)
 
     path = cfg["model"]["initial_swave_path"]
-    _swave_model = pykonal.fields.load(path)
+    _swave_model = pykonal.fields.read_hdf(path)
 
     models  = (pwave_model, swave_model)
     _models = (_pwave_model, _swave_model)
