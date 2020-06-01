@@ -497,9 +497,9 @@ class InversionIterator(object):
             max_coords = self.pwave_model.max_coords
             delta = max_coords - min_coords
             base_cells_horiz = np.random.rand(nvoronoi, 2) * delta[1:] + min_coords[1:]
-            min_coords_rad = max_coords[0] -delta*hvratio
-            base_cell_rad = np.random.rand(nvoronoi,)*delta[0]*hvratio + min_coords_rad
-            base_cells = np.hstack([cells_rad,cells_horiz])
+            min_coords_rad = max_coords[0] -delta[0]*hvratio
+            base_cells_rad = np.random.rand(nvoronoi,1)*delta[0]*hvratio + min_coords_rad
+            base_cells = np.hstack([base_cells_rad,base_cells_horiz])
 
             k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
@@ -542,6 +542,7 @@ class InversionIterator(object):
 
             medians = _clustering.k_medians(kvoronoi, points)
             medians_rad = medians[:,0].max()-(medians[:,0].max()-medians[:,0])*hvratio
+            medians_rad = medians_rad.reshape(kvoronoi,1)
             medians_horiz = medians[:,1:]
             medians = np.hstack([medians_rad,medians_horiz])
 
@@ -563,7 +564,7 @@ class InversionIterator(object):
         tree = scipy.spatial.cKDTree(voronoi_cells)
 
         raypath_rad_max = raypath[:,0].max()
-        rapath[:,0] = raypath_rad_max - (raypath_rad_max -raypath[:,0])*hvratio
+        raypath[:,0] = raypath_rad_max - (raypath_rad_max -raypath[:,0])*hvratio
 
         raypath = sph2xyz(raypath, (0, 0, 0))
         _, column_idxs = tree.query(raypath)
@@ -714,6 +715,68 @@ class InversionIterator(object):
 
         return (True)
 
+    @_utilities.log_errors(logger)
+    def _update_arrival_weights_random(
+        self,
+        phase: str,
+        npts: int=5000,
+    ) -> bool:
+        """
+        Update arrival weights using KDE.
+        """
+
+        logger.info("Updating weights for homogeneous raypath sampling.")
+
+        if RANK == ROOT_RANK:
+            arrivals = self.arrivals
+            arrivals = arrivals[arrivals["phase"] == phase]
+
+            # Merge event data.
+            events = self.events
+            lon_min = events['longitude'].min()
+            lon_max = events['longitude'].max()
+            lat_min = events['latitude'].min()
+            lat_max = events['latitude'].max()
+            dep_min = events['depth'].min()
+            dep_max = events['depth'].max()
+
+            rand_lon = np.random.rand(npts,1)*(lon_max-lon_min)+lon_min
+            rand_lat = np.random.rand(npts,1)*(lat_max-lat_min)+lat_min
+            rand_dep = np.random.rand(npts,1)*(dep_max-dep_min)+dep_min
+
+            cell_coords = geo2sph(np.hstack([rand_lat,rand_lon,rand_dep]))
+            vcells = sph2xyz(cell_coords,(0,0,0))
+
+            tree = scipy.spatial.cKDTree(vcells)
+            events_geo = geo2sph(events[['latitude','longitude','depth']])
+            events_xyz = sph2xyz(events_geo, origin=(0,0,0))
+            _, cell_ids = tree.query(events_xyz)
+            events['cell_id'] = cell_ids
+
+            events_count = events[['latitude','cell_id']]
+            events_count = events_count.groupby(by='cell_id').count()
+            events_count = events_count.reset_index()
+            events_weight = events[['event_id','cell_id']].merge(events_count,on='cell_id')
+            events_weight['weight'] = 1.0/events_weight['latitude']
+
+            arrivals = arrivals.merge(events_weight,on = 'event_id')
+            arrivals = arrivals.drop(columns=['latitude','cell_id'])
+
+            # Update the self.arrivals attribute with weights.
+            index_columns = ["network", "station", "event_id", "phase"]
+            arrivals = arrivals.set_index(index_columns)
+            _arrivals = self.arrivals.set_index(index_columns)
+            _arrivals = _arrivals.sort_index()
+            idx = arrivals.index
+            _arrivals.loc[idx, "weight"] = arrivals["weight"]
+            _arrivals = _arrivals.reset_index()
+            self.arrivals = _arrivals
+
+        self.synchronize(attrs=["arrivals"])
+
+        return (True)
+
+
 
     @_utilities.log_errors(logger)
     def _update_arrival_weights(
@@ -802,7 +865,7 @@ class InversionIterator(object):
             interpolator = scipy.interpolate.RegularGridInterpolator(points, values)
 
             # Assign weights to the arrivals.
-            arrivals["weight"] = 1 / interpolator(data)
+            arrivals["weight"] = 1 / np.exp(interpolator(data))
 
             # Update the self.arrivals attribute with weights.
             index_columns = ["network", "station", "event_id", "phase"]
@@ -820,7 +883,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _update_projection_matrix(self):
+    def _update_projection_matrix(self, hvratio = 5.0):
         """
         Update the projection matrix using the current Voronoi cells.
         """
@@ -834,6 +897,9 @@ class InversionIterator(object):
             voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
             tree = scipy.spatial.cKDTree(voronoi_cells)
             nodes = self.pwave_model.nodes.reshape(-1, 3)
+            maxrad = nodes[:,0].max()
+            newrad = maxrad - (maxrad-nodes[:,0])*hvratio
+            nodes[:,0] = newrad
             nodes = sph2xyz(nodes, origin=(0,0,0))
             _, column_ids = tree.query(nodes)
 
@@ -911,6 +977,8 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             _path = self.traveltime_inventory_path
+            if os.path.isfile(_path):
+                os.remove(_path)
             with TraveltimeInventory(_path, mode="w") as tt_inventory:
 
                 pattern = os.path.join(traveltime_dir, "*.h5")
@@ -1635,7 +1703,6 @@ def arrival_dict(dataframe, event_id):
     }
 
     return (_arrival_dict)
-
 
 def remove_outliers(dataframe, tukey_k, column):
     """
