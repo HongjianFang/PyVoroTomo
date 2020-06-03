@@ -580,13 +580,13 @@ class InversionIterator(object):
         """
 
         hvr = self.cfg["algorithm"]["hvr"]
-        voronoi_cells = sph2xyz(self.voronoi_cells, (0, 0, 0))
+        voronoi_cells = sph2xyz(self.voronoi_cells)
         tree = scipy.spatial.cKDTree(voronoi_cells)
 
         rho_max = raypath[:, 0].max()
         raypath[:, 0] = rho_max   -   (rho_max - raypath[:, 0])  *  hvr
 
-        raypath = sph2xyz(raypath, (0, 0, 0))
+        raypath = sph2xyz(raypath)
         _, column_idxs = tree.query(raypath)
         column_idxs, counts = np.unique(column_idxs, return_counts=True)
 
@@ -881,7 +881,7 @@ class InversionIterator(object):
             nvoronoi = len(self.voronoi_cells)
             hvr = self.cfg["algorithm"]["hvr"]
 
-            voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
+            voronoi_cells = sph2xyz(self.voronoi_cells)
             tree = scipy.spatial.cKDTree(voronoi_cells)
             nodes = self.pwave_model.nodes.reshape(-1, 3)
 
@@ -889,7 +889,7 @@ class InversionIterator(object):
             rho = rho_max   -   (rho_max - nodes[:, 0])  *  hvr
             nodes[:, 0] = rho
 
-            nodes = sph2xyz(nodes, origin=(0,0,0))
+            nodes = sph2xyz(nodes)
             _, column_ids = tree.query(nodes)
 
             nnodes = np.prod(self.pwave_model.nodes.shape[:-1])
