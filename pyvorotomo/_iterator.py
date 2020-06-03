@@ -1359,7 +1359,6 @@ class InversionIterator(object):
                 # Relocate the event.
                 loc = locator.locate(initial, delta)
                 loc[0] = min(loc[0], rho_max)
-                logger.debug(loc)
 
                 # Get residual RMS, reformat result, and append to
                 # relocated_events DataFrame.
