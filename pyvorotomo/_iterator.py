@@ -339,6 +339,9 @@ class InversionIterator(object):
             show=False
         )
         x, istop, itn, normr, normar, norma, conda, normx = result
+
+        logger.info(f"The condition number of the sensitivity matrix is {conda:.0f}")
+
         delta_slowness = self.projection_matrix * x
         delta_slowness = delta_slowness.reshape(model.npts)
         slowness = np.power(model.values, -1) + delta_slowness
