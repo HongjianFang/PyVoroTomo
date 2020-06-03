@@ -516,7 +516,7 @@ class InversionIterator(object):
             delta = max_coords - min_coords
             rho_min = max_coords[0] - delta[0] * hvr
             base_cells_rho = np.random.rand(nvoronoi, 1) * delta[0] * hvr  +  rho_min
-            base_cells_tp = np.random.rand(nvoronoi, 2) * delta[1:] - min_coords[1:]
+            base_cells_tp = np.random.rand(nvoronoi, 2) * delta[1:] + min_coords[1:]
             base_cells = np.hstack([base_cells_rho, base_cells_tp])
 
             k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
