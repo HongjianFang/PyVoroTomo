@@ -40,7 +40,9 @@ class InversionIterator(object):
     procedure.
     """
 
+
     def __init__(self, argc):
+
         self._argc = argc
         self._arrivals = None
         self._cfg = None
@@ -60,7 +62,9 @@ class InversionIterator(object):
         self._stations = None
         self._step_size = None
         self._sampled_arrivals = None
+        self._sampled_events = None
         self._voronoi_cells = None
+
         if RANK == ROOT_RANK:
             scratch_dir = argc.scratch_dir
             self._scratch_dir_obj = tempfile.TemporaryDirectory(dir=scratch_dir)
@@ -73,16 +77,20 @@ class InversionIterator(object):
 
 
     def __del__(self):
+
         if RANK == ROOT_RANK:
+
             self._f5_workspace.close()
         shutil.rmtree(self.scratch_dir)
 
 
     def __enter__(self):
+
         return (self)
 
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
+
         self.__del__()
 
 
@@ -202,6 +210,14 @@ class InversionIterator(object):
     @sampled_arrivals.setter
     def sampled_arrivals(self, value):
         self._sampled_arrivals = value
+
+    @property
+    def sampled_events(self):
+        return (self._sampled_events)
+
+    @sampled_events.setter
+    def sampled_events(self, value):
+        self._sampled_events = value
 
     @property
     def scratch_dir(self):
@@ -418,7 +434,7 @@ class InversionIterator(object):
                 network, station = item
 
                 # Get the subset of arrivals belonging to this station.
-                _arrivals = arrivals.loc[(network, station)]
+                _arrivals = arrivals.loc[[(network, station)]]
                 _arrivals = _arrivals.set_index("event_id")
 
                 # Open the raypath file.
@@ -495,11 +511,13 @@ class InversionIterator(object):
 
             min_coords = self.pwave_model.min_coords
             max_coords = self.pwave_model.max_coords
+            hvr = self.cfg["algorithm"]["hvr"]
+
             delta = max_coords - min_coords
-            base_cells_horiz = np.random.rand(nvoronoi, 2) * delta[1:] + min_coords[1:]
-            min_coords_rad = max_coords[0] -delta[0]*hvratio
-            base_cells_rad = np.random.rand(nvoronoi,1)*delta[0]*hvratio + min_coords_rad
-            base_cells = np.hstack([base_cells_rad,base_cells_horiz])
+            rho_min = max_coords[0] - delta[0] * hvr
+            base_cells_rho = np.random.rand(nvoronoi, 1) * delta[0] * hvr  +  rho_min
+            base_cells_tp = np.random.rand(nvoronoi, 2) * delta[1:] + min_coords[1:]
+            base_cells = np.hstack([base_cells_rho, base_cells_tp])
 
             k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
@@ -523,7 +541,7 @@ class InversionIterator(object):
                 path = os.path.join(raypath_dir, filename)
                 raypath_file = h5py.File(path, mode="r")
 
-                event_ids = arrivals.loc[(network, station), "event_id"]
+                event_ids = arrivals.loc[[(network, station)], "event_id"]
                 idxs = events.loc[event_ids, "idx"]
                 idxs = np.sort(idxs)
 
@@ -541,10 +559,11 @@ class InversionIterator(object):
             points = points[idxs]
 
             medians = _clustering.k_medians(kvoronoi, points)
-            medians_rad = medians[:,0].max()-(medians[:,0].max()-medians[:,0])*hvratio
-            medians_rad = medians_rad.reshape(kvoronoi,1)
-            medians_horiz = medians[:,1:]
-            medians = np.hstack([medians_rad,medians_horiz])
+            rho_max = medians[:, 0].max()
+            medians_rho = rho_max  -  (rho_max - medians[:, 0]) * hvr
+            medians_rho = medians_rho.reshape(kvoronoi, 1)
+            medians_tp = medians[:, 1:]
+            medians = np.hstack([medians_rho, medians_tp])
 
             self.voronoi_cells = np.vstack([base_cells, medians])
 
@@ -560,13 +579,15 @@ class InversionIterator(object):
         raypath and the length of each segment in counts.
         """
 
-        voronoi_cells = sph2xyz(self.voronoi_cells, (0, 0, 0))
+        hvr = self.cfg["algorithm"]["hvr"]
+        voronoi_cells = sph2xyz(self.voronoi_cells)
         tree = scipy.spatial.cKDTree(voronoi_cells)
 
-        raypath_rad_max = raypath[:,0].max()
-        raypath[:,0] = raypath_rad_max - (raypath_rad_max -raypath[:,0])*hvratio
+        rho_max = raypath[:, 0].max()
+        raypath[:, 0] = rho_max   -   (rho_max - raypath[:, 0])  *  hvr
 
-        raypath = sph2xyz(raypath, (0, 0, 0))
+        raypath = sph2xyz(raypath)
+
         _, column_idxs = tree.query(raypath)
         column_idxs, counts = np.unique(column_idxs, return_counts=True)
 
@@ -619,8 +640,15 @@ class InversionIterator(object):
             tukey_k = self.cfg["algorithm"]["outlier_removal_factor"]
             narrival = self.cfg["algorithm"]["narrival"]
 
+            # Subset for the arrivals associated with sampled events.
+            arrivals = self.arrivals.set_index("event_id")
+            arrivals = arrivals.sort_index()
+            event_ids = self.sampled_events["event_id"]
+            arrivals = arrivals.loc[event_ids]
+            arrivals = arrivals.reset_index()
+
             # Subset for the appropriate phase.
-            arrivals = self.arrivals.set_index("phase")
+            arrivals = arrivals.set_index("phase")
             arrivals = arrivals.sort_index()
             arrivals = arrivals.loc[phase]
 
@@ -628,11 +656,32 @@ class InversionIterator(object):
             arrivals = remove_outliers(arrivals, tukey_k, "residual")
 
             # Sample arrivals.
-            arrivals = arrivals.sample(n=narrival, weights="weight")
+            replace = True if narrival > len(arrivals) else False
+            arrivals = arrivals.sample(n=narrival, weights="weight", replace=replace)
 
             self.sampled_arrivals = arrivals
 
         self.synchronize(attrs=["sampled_arrivals"])
+
+        return (True)
+
+
+    @_utilities.log_errors(logger)
+    def _sample_events(self):
+        """
+        Draw a random sample of events and update the
+        "sampled_events" attribute.
+        """
+
+        if RANK == ROOT_RANK:
+            nevent = self.cfg["algorithm"]["nevent"]
+
+            # Sample events.
+            events = self.events.sample(n=nevent, weights=None)
+
+            self.sampled_events = events
+
+        self.synchronize(attrs=["sampled_events"])
 
         return (True)
 
@@ -693,7 +742,7 @@ class InversionIterator(object):
                     else:
                         dataset = raypath_file[phase]
 
-                    event_ids = arrivals.loc[(network, station), "event_id"].values
+                    event_ids = arrivals.loc[[(network, station)], "event_id"].values
 
                     for event_id in event_ids:
 
@@ -893,14 +942,18 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             nvoronoi = len(self.voronoi_cells)
+            hvr = self.cfg["algorithm"]["hvr"]
 
-            voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
+            voronoi_cells = sph2xyz(self.voronoi_cells)
             tree = scipy.spatial.cKDTree(voronoi_cells)
             nodes = self.pwave_model.nodes.reshape(-1, 3)
-            maxrad = nodes[:,0].max()
-            newrad = maxrad - (maxrad-nodes[:,0])*hvratio
-            nodes[:,0] = newrad
-            nodes = sph2xyz(nodes, origin=(0,0,0))
+
+            rho_max = nodes[:, 0].max()
+            rho = rho_max   -   (rho_max - nodes[:, 0])  *  hvr
+            nodes[:, 0] = rho
+
+            nodes = sph2xyz(nodes)
+
             _, column_ids = tree.query(nodes)
 
             nnodes = np.prod(self.pwave_model.nodes.shape[:-1])
@@ -1018,6 +1071,7 @@ class InversionIterator(object):
             self._update_arrival_weights(phase)
             for self.ireal in range(nreal):
                 logger.info(f"Realization #{self.ireal+1} (/{nreal}).")
+                self._sample_events()
                 self._sample_arrivals(phase)
                 self._trace_rays(phase)
                 self._generate_voronoi_cells(
@@ -1318,6 +1372,7 @@ class InversionIterator(object):
             )
 
             # Create some aliases for configuration-file parameters.
+            depth_min = self.cfg["relocate"]["depth_min"]
             dlat = self.cfg["relocate"]["dlat"]
             dlon = self.cfg["relocate"]["dlon"]
             dz = self.cfg["relocate"]["ddepth"]
@@ -1325,6 +1380,7 @@ class InversionIterator(object):
 
             # Convert configuration-file parameters from geographic to
             # spherical coordinates
+            rho_max = _constants.EARTH_RADIUS - depth_min
             dtheta = np.radians(dlat)
             dphi = np.radians(dlon)
 
@@ -1365,6 +1421,8 @@ class InversionIterator(object):
 
                 # Relocate the event.
                 loc = locator.locate(initial, delta)
+                loc[0] = min(loc[0], rho_max)
+                logger.debug(loc)
 
                 # Get residual RMS, reformat result, and append to
                 # relocated_events DataFrame.

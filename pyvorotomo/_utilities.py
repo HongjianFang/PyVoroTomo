@@ -258,6 +258,10 @@ def parse_cfg(configuration_file):
         "algorithm",
         "nvoronoi"
     )
+    _cfg["hvr"] = parser.getfloat(
+        "algorithm",
+        "hvr"
+    )
     _cfg["nreal"] = parser.getint(
         "algorithm",
         "nreal"
@@ -273,6 +277,10 @@ def parse_cfg(configuration_file):
     _cfg["narrival"] = parser.getint(
         "algorithm",
         "narrival"
+    )
+    _cfg["nevent"] = parser.getint(
+        "algorithm",
+        "nevent"
     )
     _cfg["outlier_removal_factor"] = parser.getfloat(
         "algorithm",
@@ -346,6 +354,10 @@ def parse_cfg(configuration_file):
         )
     elif _cfg["method"].upper() == "DE":
         # Parse parameters for DE relocation.
+        _cfg["depth_min"] = parser.getfloat(
+            "de_relocation",
+            "depth_min"
+        )
         _cfg["dlat"] = parser.getfloat(
             "de_relocation",
             "dlat"
