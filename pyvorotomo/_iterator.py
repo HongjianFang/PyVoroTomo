@@ -40,7 +40,9 @@ class InversionIterator(object):
     procedure.
     """
 
+
     def __init__(self, argc):
+
         self._argc = argc
         self._arrivals = None
         self._cfg = None
@@ -60,7 +62,9 @@ class InversionIterator(object):
         self._stations = None
         self._step_size = None
         self._sampled_arrivals = None
+        self._sampled_events = None
         self._voronoi_cells = None
+
         if RANK == ROOT_RANK:
             scratch_dir = argc.scratch_dir
             self._scratch_dir_obj = tempfile.TemporaryDirectory(dir=scratch_dir)
@@ -73,16 +77,20 @@ class InversionIterator(object):
 
 
     def __del__(self):
+
         if RANK == ROOT_RANK:
+
             self._f5_workspace.close()
         shutil.rmtree(self.scratch_dir)
 
 
     def __enter__(self):
+
         return (self)
 
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
+
         self.__del__()
 
 
@@ -202,6 +210,14 @@ class InversionIterator(object):
     @sampled_arrivals.setter
     def sampled_arrivals(self, value):
         self._sampled_arrivals = value
+
+    @property
+    def sampled_events(self):
+        return (self._sampled_events)
+
+    @sampled_events.setter
+    def sampled_events(self, value):
+        self._sampled_events = value
 
     @property
     def scratch_dir(self):
@@ -418,7 +434,7 @@ class InversionIterator(object):
                 network, station = item
 
                 # Get the subset of arrivals belonging to this station.
-                _arrivals = arrivals.loc[(network, station)]
+                _arrivals = arrivals.loc[[(network, station)]]
                 _arrivals = _arrivals.set_index("event_id")
 
                 # Open the raypath file.
@@ -520,7 +536,7 @@ class InversionIterator(object):
                 path = os.path.join(raypath_dir, filename)
                 raypath_file = h5py.File(path, mode="r")
 
-                event_ids = arrivals.loc[(network, station), "event_id"]
+                event_ids = arrivals.loc[[(network, station)], "event_id"]
                 idxs = events.loc[event_ids, "idx"]
                 idxs = np.sort(idxs)
 
@@ -608,8 +624,15 @@ class InversionIterator(object):
             tukey_k = self.cfg["algorithm"]["outlier_removal_factor"]
             narrival = self.cfg["algorithm"]["narrival"]
 
+            # Subset for the arrivals associated with sampled events.
+            arrivals = self.arrivals.set_index("event_id")
+            arrivals = arrivals.sort_index()
+            event_ids = self.sampled_events["event_id"]
+            arrivals = arrivals.loc[event_ids]
+            arrivals = arrivals.reset_index()
+
             # Subset for the appropriate phase.
-            arrivals = self.arrivals.set_index("phase")
+            arrivals = arrivals.set_index("phase")
             arrivals = arrivals.sort_index()
             arrivals = arrivals.loc[phase]
 
@@ -617,11 +640,32 @@ class InversionIterator(object):
             arrivals = remove_outliers(arrivals, tukey_k, "residual")
 
             # Sample arrivals.
-            arrivals = arrivals.sample(n=narrival, weights="weight")
+            replace = True if narrival > len(arrivals) else False
+            arrivals = arrivals.sample(n=narrival, weights="weight", replace=replace)
 
             self.sampled_arrivals = arrivals
 
         self.synchronize(attrs=["sampled_arrivals"])
+
+        return (True)
+
+
+    @_utilities.log_errors(logger)
+    def _sample_events(self):
+        """
+        Draw a random sample of events and update the
+        "sampled_events" attribute.
+        """
+
+        if RANK == ROOT_RANK:
+            nevent = self.cfg["algorithm"]["nevent"]
+
+            # Sample events.
+            events = self.events.sample(n=nevent, weights=None)
+
+            self.sampled_events = events
+
+        self.synchronize(attrs=["sampled_events"])
 
         return (True)
 
@@ -940,6 +984,7 @@ class InversionIterator(object):
             self._update_arrival_weights(phase)
             for self.ireal in range(nreal):
                 logger.info(f"Realization #{self.ireal+1} (/{nreal}).")
+                self._sample_events()
                 self._sample_arrivals(phase)
                 self._trace_rays(phase)
                 self._generate_voronoi_cells(

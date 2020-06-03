@@ -274,6 +274,10 @@ def parse_cfg(configuration_file):
         "algorithm",
         "narrival"
     )
+    _cfg["nevent"] = parser.getint(
+        "algorithm",
+        "nevent"
+    )
     _cfg["outlier_removal_factor"] = parser.getfloat(
         "algorithm",
         "outlier_removal_factor"
