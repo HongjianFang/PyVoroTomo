@@ -1306,6 +1306,7 @@ class InversionIterator(object):
             )
 
             # Create some aliases for configuration-file parameters.
+            depth_min = self.cfg["relocate"]["depth_min"]
             dlat = self.cfg["relocate"]["dlat"]
             dlon = self.cfg["relocate"]["dlon"]
             dz = self.cfg["relocate"]["ddepth"]
@@ -1313,6 +1314,7 @@ class InversionIterator(object):
 
             # Convert configuration-file parameters from geographic to
             # spherical coordinates
+            rho_max = _constants.EARTH_RADIUS - depth_min
             dtheta = np.radians(dlat)
             dphi = np.radians(dlon)
 
@@ -1353,6 +1355,8 @@ class InversionIterator(object):
 
                 # Relocate the event.
                 loc = locator.locate(initial, delta)
+                loc[0] = min(loc[0], rho_max)
+                logger.debug(loc)
 
                 # Get residual RMS, reformat result, and append to
                 # relocated_events DataFrame.

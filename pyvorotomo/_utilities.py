@@ -354,6 +354,10 @@ def parse_cfg(configuration_file):
         )
     elif _cfg["method"].upper() == "DE":
         # Parse parameters for DE relocation.
+        _cfg["depth_min"] = parser.getfloat(
+            "de_relocation",
+            "depth_min"
+        )
         _cfg["dlat"] = parser.getfloat(
             "de_relocation",
             "dlat"
