@@ -511,8 +511,13 @@ class InversionIterator(object):
 
             min_coords = self.pwave_model.min_coords
             max_coords = self.pwave_model.max_coords
+            hvr = self.cfg["algorithm"]["hvr"]
+
             delta = max_coords - min_coords
-            base_cells = np.random.rand(nvoronoi, 3) * delta + min_coords
+            rho_min = max_coords[0] - delta[0] * hvr
+            base_cells_rho = np.random.rand(nvoronoi, 1) * delta[0] * hvr  +  rho_min
+            base_cells_tp = np.random.rand(nvoronoi, 2) * delta[1:] - min_coords[1:]
+            base_cells = np.hstack([base_cells_rho, base_cells_tp])
 
             k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
@@ -554,6 +559,11 @@ class InversionIterator(object):
             points = points[idxs]
 
             medians = _clustering.k_medians(kvoronoi, points)
+            rho_max = medians[:, 0].max()
+            medians_rho = rho_max  -  (rho_max - medians[:, 0]) * hvr
+            medians_rho = medians_rho.reshape(kvoronoi, 1)
+            medians_tp = medians[:, 1:]
+            medians = np.hstack([medians_rho, medians_tp])
 
             self.voronoi_cells = np.vstack([base_cells, medians])
 
@@ -569,8 +579,13 @@ class InversionIterator(object):
         raypath and the length of each segment in counts.
         """
 
+        hvr = self.cfg["algorithm"]["hvr"]
         voronoi_cells = sph2xyz(self.voronoi_cells, (0, 0, 0))
         tree = scipy.spatial.cKDTree(voronoi_cells)
+
+        rho_max = raypath[:, 0].max()
+        raypath[:, 0] = rho_max   -   (rho_max - raypath[:, 0])  *  hvr
+
         raypath = sph2xyz(raypath, (0, 0, 0))
         _, column_idxs = tree.query(raypath)
         column_idxs, counts = np.unique(column_idxs, return_counts=True)
@@ -726,7 +741,7 @@ class InversionIterator(object):
                     else:
                         dataset = raypath_file[phase]
 
-                    event_ids = arrivals.loc[(network, station), "event_id"].values
+                    event_ids = arrivals.loc[[(network, station)], "event_id"].values
 
                     for event_id in event_ids:
 
@@ -864,10 +879,16 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             nvoronoi = len(self.voronoi_cells)
+            hvr = self.cfg["algorithm"]["hvr"]
 
             voronoi_cells = sph2xyz(self.voronoi_cells, origin=(0,0,0))
             tree = scipy.spatial.cKDTree(voronoi_cells)
             nodes = self.pwave_model.nodes.reshape(-1, 3)
+
+            rho_max = nodes[:, 0].max()
+            rho = rho_max   -   (rho_max - nodes[:, 0])  *  hvr
+            nodes[:, 0] = rho
+
             nodes = sph2xyz(nodes, origin=(0,0,0))
             _, column_ids = tree.query(nodes)
 
