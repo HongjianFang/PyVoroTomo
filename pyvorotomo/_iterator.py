@@ -677,7 +677,7 @@ class InversionIterator(object):
             nevent = self.cfg["algorithm"]["nevent"]
 
             # Sample events.
-            events = self.events.sample(n=nevent, weights=None)
+            events = self.events.sample(n=nevent, weights='weights')
 
             self.sampled_events = events
 
@@ -822,6 +822,66 @@ class InversionIterator(object):
             self.arrivals = _arrivals
 
         self.synchronize(attrs=["arrivals"])
+
+        return (True)
+
+    @_utilities.log_errors(logger)
+    def _update_events_weights(
+        self,
+        phase: str,
+        npts: int=16,
+        bandwidth: float=0.1
+    ) -> bool:
+        """
+        Update events weights using KDE.
+        """
+
+        logger.info("Updating weights for homogeneous raypath sampling.")
+
+        if RANK == ROOT_RANK:
+
+            # Merge event data.
+            events = self.events
+
+            # Extract the data for KDE fitting.
+            kde_columns = [
+                "latitude",
+                "longitude",
+                "depth"
+            ]
+            ndim = len(kde_columns)
+            data = events[kde_columns].values
+
+            # Normalize the data.
+            data_min = data.min(axis=0)
+            data_max = data.max(axis=0)
+            data_range = data_max - data_min
+            data_delta = data - data_min
+            data = data_delta / data_range
+
+            # Fit and evaluate the KDE.
+            kde = kp.FFTKDE(bw=bandwidth).fit(data)
+            points, values = kde.evaluate(npts)
+            points = [np.unique(points[:,iax]) for iax in range(ndim)]
+            values = values.reshape((npts,) * ndim)
+
+            # Initialize an interpolator because FFTKDE is evaluated on a
+            # regular grid.
+            interpolator = scipy.interpolate.RegularGridInterpolator(points, values)
+
+            # Assign weights to the arrivals.
+            events["weight"] = 1 / np.exp(interpolator(data))
+
+            # Update the self.arrivals attribute with weights.
+            index_columns = ["event_id"]
+            _events = self.events.set_index(index_columns)
+            _events = _events.sort_index()
+            idx = events.index
+            _events.loc[idx, "weight"] = events["weight"]
+            _events = _events.reset_index()
+            self.events = _events
+
+        self.synchronize(attrs=["events"])
 
         return (True)
 
@@ -1069,6 +1129,7 @@ class InversionIterator(object):
             logger.info(f"Updating {phase}-wave model")
             self._reset_realization_stack(phase)
             self._update_arrival_weights(phase)
+            self._update_events_weights()
             for self.ireal in range(nreal):
                 logger.info(f"Realization #{self.ireal+1} (/{nreal}).")
                 self._sample_events()
