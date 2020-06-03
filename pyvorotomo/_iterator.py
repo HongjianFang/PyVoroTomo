@@ -497,7 +497,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi, hvratio = 5.0):
+    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi):
         """
         Generate Voronoi cells using k-medians clustering of raypaths.
         """
@@ -573,7 +573,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _projected_ray_idxs(self, raypath, hvratio = 5.0):
+    def _projected_ray_idxs(self, raypath):
         """
         Return the cell IDs (column IDs) of each segment of the given
         raypath and the length of each segment in counts.
@@ -677,7 +677,7 @@ class InversionIterator(object):
             nevent = self.cfg["algorithm"]["nevent"]
 
             # Sample events.
-            events = self.events.sample(n=nevent, weights=None)
+            events = self.events.sample(n=nevent, weights="weight")
 
             self.sampled_events = events
 
@@ -825,6 +825,64 @@ class InversionIterator(object):
 
         return (True)
 
+    @_utilities.log_errors(logger)
+    def _update_events_weights(
+        self,
+        npts: int=16,
+        bandwidth: float=0.1
+    ) -> bool:
+        """
+        Update events weights using KDE.
+        """
+
+        logger.info("Updating weights for homogeneous raypath sampling.")
+
+        if RANK == ROOT_RANK:
+
+            # Merge event data.
+            events = self.events
+
+            # Extract the data for KDE fitting.
+            kde_columns = [
+                "latitude",
+                "longitude",
+                "depth"
+            ]
+            ndim = len(kde_columns)
+            data = events[kde_columns].values
+
+            # Normalize the data.
+            data_min = data.min(axis=0)
+            data_max = data.max(axis=0)
+            data_range = data_max - data_min
+            data_delta = data - data_min
+            data = data_delta / data_range
+
+            # Fit and evaluate the KDE.
+            kde = kp.FFTKDE(bw=bandwidth).fit(data)
+            points, values = kde.evaluate(npts)
+            points = [np.unique(points[:,iax]) for iax in range(ndim)]
+            values = values.reshape((npts,) * ndim)
+
+            # Initialize an interpolator because FFTKDE is evaluated on a
+            # regular grid.
+            interpolator = scipy.interpolate.RegularGridInterpolator(points, values)
+
+            # Assign weights to the arrivals.
+            #events["weight"] = 1 / np.exp(interpolator(data))
+            if self.iiter<2:
+                events["weight"] = 1.0 / interpolator(data)
+            elif 2<=self.iiter<4:
+                events["weight"] = 1.0 / np.exp(interpolator(data))
+            else:
+                events["weight"] = 1.0
+
+            self.events = events
+
+        self.synchronize(attrs=["events"])
+
+        return (True)
+
 
 
     @_utilities.log_errors(logger)
@@ -932,7 +990,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _update_projection_matrix(self, hvratio = 5.0):
+    def _update_projection_matrix(self):
         """
         Update the projection matrix using the current Voronoi cells.
         """
@@ -1069,6 +1127,7 @@ class InversionIterator(object):
             logger.info(f"Updating {phase}-wave model")
             self._reset_realization_stack(phase)
             self._update_arrival_weights(phase)
+            self._update_events_weights()
             for self.ireal in range(nreal):
                 logger.info(f"Realization #{self.ireal+1} (/{nreal}).")
                 self._sample_events()
