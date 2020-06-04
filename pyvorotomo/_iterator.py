@@ -1588,7 +1588,7 @@ class InversionIterator(object):
 
         logger.info("Updating arrival residuals.")
 
-        arrivals = self.arrivals.set_index(["network", "station", "phase", "event_id"])
+        arrivals = self.arrivals.set_index(["network", "station", "phase"])
         arrivals = arrivals.sort_index()
 
         if RANK == ROOT_RANK:
@@ -1622,7 +1622,7 @@ class InversionIterator(object):
                         break
 
 
-                    network, station, phase, event_id = item
+                    network, station, phase = item
                     handle = "/".join([network, station, phase])
 
                     if handle != last_handle:
@@ -1630,22 +1630,23 @@ class InversionIterator(object):
                         traveltime = traveltime_inventory.read(handle)
                         last_handle = handle
 
-                    arrival_time = arrivals.loc[(network, station, phase, event_id), "time"]
+                    _arrivals = arrivals.loc[(network, station, phase)]
+                    arrival_times = _arrivals["time"].values
 
-                    origin_time = events.loc[event_id, "time"]
-                    coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
+                    origin_times = events["time"].values
+                    coords = events[["latitude", "longitude", "depth"]].values
                     coords = geo2sph(coords)
-                    residual = arrival_time - (origin_time + traveltime.value(coords))
-                    arrival = dict(
+                    residuals = arrival_times - (origin_times + traveltime.resample(coords))
+                    _arrivals = dict(
                         network=network,
                         station=station,
                         phase=phase,
-                        event_id=event_id,
-                        time=arrival_time,
-                        residual=residual
+                        event_id=_arrivals["event_id"].values,
+                        time=arrival_times,
+                        residual=residuals
                     )
-                    arrival = pd.DataFrame([arrival])
-                    updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
+                    _arrivals = pd.DataFrame(_arrivals)
+                    updated_arrivals = updated_arrivals.append(_arrivals, ignore_index=True)
 
         self.synchronize(attrs=["arrivals"])
 
