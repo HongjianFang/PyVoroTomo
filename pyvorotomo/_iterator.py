@@ -522,53 +522,57 @@ class InversionIterator(object):
             base_cells_tp = np.random.rand(nvoronoi, 2) * delta[1:] + min_coords[1:]
             base_cells = np.hstack([base_cells_rho, base_cells_tp])
 
-            k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
+            self.voronoi_cells = base_cells
 
-            raypaths = []
-            raypath_dir = self.raypath_dir
+            if kvoronoi > 0:
 
-            columns = ["network", "station"]
-            arrivals = self.sampled_arrivals.set_index(columns)
-            arrivals = arrivals.sort_index()
-            index = arrivals.index.unique()
+                k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
-            events = self.events.set_index("event_id")
-            events["idx"] = np.arange(len(events))
+                raypaths = []
+                raypath_dir = self.raypath_dir
 
-            points = np.empty((0, 3))
+                columns = ["network", "station"]
+                arrivals = self.sampled_arrivals.set_index(columns)
+                arrivals = arrivals.sort_index()
+                index = arrivals.index.unique()
 
-            for network, station in index:
+                events = self.events.set_index("event_id")
+                events["idx"] = np.arange(len(events))
 
-                # Open the raypath file.
-                filename = f"{network}.{station}.{phase}.h5"
-                path = os.path.join(raypath_dir, filename)
-                raypath_file = h5py.File(path, mode="r")
+                points = np.empty((0, 3))
 
-                event_ids = arrivals.loc[[(network, station)], "event_id"]
-                idxs = events.loc[event_ids, "idx"]
-                idxs = np.sort(idxs)
+                for network, station in index:
 
-                _points = raypath_file[phase][:, idxs]
-                if _points.ndim > 1:
-                    _points = np.apply_along_axis(np.concatenate, 1, _points)
-                else:
-                    _points = np.stack(_points)
-                _points = _points.T
+                    # Open the raypath file.
+                    filename = f"{network}.{station}.{phase}.h5"
+                    path = os.path.join(raypath_dir, filename)
+                    raypath_file = h5py.File(path, mode="r")
 
-                points = np.vstack([points, _points])
+                    event_ids = arrivals.loc[[(network, station)], "event_id"]
+                    idxs = events.loc[event_ids, "idx"]
+                    idxs = np.sort(idxs)
 
-            idxs = np.arange(len(points))
-            idxs = np.random.choice(idxs, k_medians_npts, replace=False)
-            points = points[idxs]
+                    _points = raypath_file[phase][:, idxs]
+                    if _points.ndim > 1:
+                        _points = np.apply_along_axis(np.concatenate, 1, _points)
+                    else:
+                        _points = np.stack(_points)
+                    _points = _points.T
 
-            medians = _clustering.k_medians(kvoronoi, points)
-            rho_max = medians[:, 0].max()
-            medians_rho = rho_max  -  (rho_max - medians[:, 0]) * hvr
-            medians_rho = medians_rho.reshape(kvoronoi, 1)
-            medians_tp = medians[:, 1:]
-            medians = np.hstack([medians_rho, medians_tp])
+                    points = np.vstack([points, _points])
 
-            self.voronoi_cells = np.vstack([base_cells, medians])
+                idxs = np.arange(len(points))
+                idxs = np.random.choice(idxs, k_medians_npts, replace=False)
+                points = points[idxs]
+
+                medians = _clustering.k_medians(kvoronoi, points)
+                rho_max = medians[:, 0].max()
+                medians_rho = rho_max  -  (rho_max - medians[:, 0]) * hvr
+                medians_rho = medians_rho.reshape(kvoronoi, 1)
+                medians_tp = medians[:, 1:]
+                medians = np.hstack([medians_rho, medians_tp])
+
+                self.voronoi_cells = np.vstack([self.voronoi_cells, medians])
 
         self.synchronize(attrs=["voronoi_cells"])
 
