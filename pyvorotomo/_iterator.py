@@ -1665,7 +1665,7 @@ class InversionIterator(object):
 
             handle = f"{phase}wave_realization_stack"
             stack = getattr(self, handle)
-            values = np.mean(stack, axis=0)
+            values = np.median(stack, axis=0)
             variance = np.var(stack, axis=0)
 
             handle = f"{phase}wave_model"
