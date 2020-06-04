@@ -81,7 +81,7 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             self._f5_workspace.close()
-        shutil.rmtree(self.scratch_dir)
+            shutil.rmtree(self.scratch_dir)
 
 
     def __enter__(self):
@@ -340,7 +340,10 @@ class InversionIterator(object):
         )
         x, istop, itn, normr, normar, norma, conda, normx = result
 
-        logger.info(f"The condition number of the sensitivity matrix is {conda:.0f}")
+        logger.info(f"||G||    = {norma:8.1f}")
+        logger.info(f"||Gm-d|| = {normr:8.1f}")
+        logger.info(f"||m||    = {normx:8.1f}")
+        logger.info(f"cond(G)  = {conda:8.1f}")
 
         delta_slowness = self.projection_matrix * x
         delta_slowness = delta_slowness.reshape(model.npts)
@@ -1307,72 +1310,71 @@ class InversionIterator(object):
 
             # Initialize EQLocator object.
             _path = self.traveltime_inventory_path
-            locator = pykonal.locate.EQLocator(
-                station_dict(self.stations),
-                _path
-            )
+            _station_dict = station_dict(self.stations)
 
-            # Create some aliases for configuration-file parameters.
-            depth_min = self.cfg["relocate"]["depth_min"]
-            dlat = self.cfg["relocate"]["dlat"]
-            dlon = self.cfg["relocate"]["dlon"]
-            dz = self.cfg["relocate"]["ddepth"]
-            dt = self.cfg["relocate"]["dtime"]
+            with pykonal.locate.EQLocator(_station_dict, _path) as locator:
 
-            # Convert configuration-file parameters from geographic to
-            # spherical coordinates
-            rho_max = _constants.EARTH_RADIUS - depth_min
-            dtheta = np.radians(dlat)
-            dphi = np.radians(dlon)
+                # Create some aliases for configuration-file parameters.
+                depth_min = self.cfg["relocate"]["depth_min"]
+                dlat = self.cfg["relocate"]["dlat"]
+                dlon = self.cfg["relocate"]["dlon"]
+                dz = self.cfg["relocate"]["ddepth"]
+                dt = self.cfg["relocate"]["dtime"]
 
-            # Initialize the search region.
-            delta = np.array([dz, dtheta, dphi, dt])
+                # Convert configuration-file parameters from geographic to
+                # spherical coordinates
+                rho_max = _constants.EARTH_RADIUS - depth_min
+                dtheta = np.radians(dlat)
+                dphi = np.radians(dlon)
 
-            events = self.events
-            events = events.set_index("event_id")
+                # Initialize the search region.
+                delta = np.array([dz, dtheta, dphi, dt])
 
-            # Initialize empty DataFrame for updated event locations.
-            relocated_events = pd.DataFrame()
+                events = self.events
+                events = events.set_index("event_id")
 
-            while True:
+                # Initialize empty DataFrame for updated event locations.
+                relocated_events = pd.DataFrame()
 
-                # Request an event
-                event_id = self._request_dispatch()
+                while True:
 
-                if event_id is None:
-                    logger.debug("Received sentinel, gathering events.")
-                    COMM.gather(relocated_events, root=ROOT_RANK)
+                    # Request an event
+                    event_id = self._request_dispatch()
 
-                    break
+                    if event_id is None:
+                        logger.debug("Received sentinel, gathering events.")
+                        COMM.gather(relocated_events, root=ROOT_RANK)
 
-                logger.debug(f"Received event ID #{event_id}")
+                        break
 
-                # Extract the initial event location and convert to
-                # spherical coordinates.
-                _columns = ["latitude", "longitude", "depth", "time"]
-                initial = events.loc[event_id, _columns].values
-                initial[:3] = geo2sph(initial[:3])
+                    logger.debug(f"Received event ID #{event_id}")
 
-                # Clear previous event's arrivals from EQLocator.
-                locator.clear_arrivals()
+                    # Extract the initial event location and convert to
+                    # spherical coordinates.
+                    _columns = ["latitude", "longitude", "depth", "time"]
+                    initial = events.loc[event_id, _columns].values
+                    initial[:3] = geo2sph(initial[:3])
 
-                # Update EQLocator with arrivals for this event.
-                _arrivals = arrival_dict(self.arrivals, event_id)
-                locator.add_arrivals(_arrivals)
+                    # Clear previous event's arrivals from EQLocator.
+                    locator.clear_arrivals()
 
-                # Relocate the event.
-                loc = locator.locate(initial, delta)
-                loc[0] = min(loc[0], rho_max)
+                    # Update EQLocator with arrivals for this event.
+                    _arrivals = arrival_dict(self.arrivals, event_id)
+                    locator.add_arrivals(_arrivals)
 
-                # Get residual RMS, reformat result, and append to
-                # relocated_events DataFrame.
-                rms = locator.rms(loc)
-                loc[:3] = sph2geo(loc[:3])
-                event = pd.DataFrame(
-                    [np.concatenate((loc, [rms, event_id]))],
-                    columns=columns
-                )
-                relocated_events = relocated_events.append(event, ignore_index=True)
+                    # Relocate the event.
+                    loc = locator.locate(initial, delta)
+                    loc[0] = min(loc[0], rho_max)
+
+                    # Get residual RMS, reformat result, and append to
+                    # relocated_events DataFrame.
+                    rms = locator.rms(loc)
+                    loc[:3] = sph2geo(loc[:3])
+                    event = pd.DataFrame(
+                        [np.concatenate((loc, [rms, event_id]))],
+                        columns=columns
+                    )
+                    relocated_events = relocated_events.append(event, ignore_index=True)
 
         self.synchronize(attrs=["events"])
 
