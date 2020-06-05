@@ -1631,10 +1631,11 @@ class InversionIterator(object):
                         last_handle = handle
 
                     _arrivals = arrivals.loc[(network, station, phase)]
+                    _events = events.loc[_arrivals["event_id"].values]
                     arrival_times = _arrivals["time"].values
 
-                    origin_times = events["time"].values
-                    coords = events[["latitude", "longitude", "depth"]].values
+                    origin_times = _events["time"].values
+                    coords = _events[["latitude", "longitude", "depth"]].values
                     coords = geo2sph(coords)
                     residuals = arrival_times - (origin_times + traveltime.resample(coords))
                     _arrivals = dict(
