@@ -340,10 +340,10 @@ class InversionIterator(object):
         )
         x, istop, itn, normr, normar, norma, conda, normx = result
 
-        logger.info(f"||G||    = {norma:8.1f}")
-        logger.info(f"||Gm-d|| = {normr:8.1f}")
-        logger.info(f"||m||    = {normx:8.1f}")
-        logger.info(f"cond(G)  = {conda:8.1f}")
+        logger.info(f"||G||         = {norma:8.1f}")
+        logger.info(f"||Gm-d||      = {normr:8.1f}")
+        logger.info(f"||m||         = {normx:8.1f}")
+        logger.info(f"||G^-1||||G|| = {conda:8.1f}")
 
         delta_slowness = self.projection_matrix * x
         delta_slowness = delta_slowness.reshape(model.npts)
