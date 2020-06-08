@@ -1554,21 +1554,6 @@ class InversionIterator(object):
                     f"without associated events."
                 )
 
-            # Drop stations without arrivals.
-            n0 = len(self.stations)
-            arrivals = self.arrivals.set_index(["network", "station"])
-            idx_keep = arrivals.index.unique()
-            stations = self.stations.set_index(["network", "station"])
-            stations = stations.loc[idx_keep]
-            stations = stations.reset_index()
-            self.stations = stations
-            dn = n0 - len(self.stations)
-            if dn > 0:
-                logger.info(
-                    f"Dropped {dn} station{'s' if dn > 1 else ''} without "
-                    f"associated arrivals."
-                )
-
             # Drop arrivals without stations.
             n0 = len(self.arrivals)
             stations = self.stations.set_index(["network", "station"])
@@ -1582,6 +1567,22 @@ class InversionIterator(object):
                 logger.info(
                     f"Dropped {dn} arrival{'s' if dn > 1 else ''} without "
                     f"associated stations."
+                )
+
+
+            # Drop stations without arrivals.
+            n0 = len(self.stations)
+            arrivals = self.arrivals.set_index(["network", "station"])
+            idx_keep = arrivals.index.unique()
+            stations = self.stations.set_index(["network", "station"])
+            stations = stations.loc[idx_keep]
+            stations = stations.reset_index()
+            self.stations = stations
+            dn = n0 - len(self.stations)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} station{'s' if dn > 1 else ''} without "
+                    f"associated arrivals."
                 )
 
 
