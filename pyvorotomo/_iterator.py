@@ -861,7 +861,7 @@ class InversionIterator(object):
             interpolator = scipy.interpolate.RegularGridInterpolator(points, values)
 
             # Assign weights to the arrivals.
-            arrivals["weight"] = 1 / interpolator(data)
+            arrivals["weight"] = 1 / np.exp(interpolator(data))
 
             # Update the self.arrivals attribute with weights.
             index_columns = ["network", "station", "event_id", "phase"]
