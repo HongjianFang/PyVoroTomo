@@ -497,7 +497,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi, hvratio = 5.0):
+    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi):
         """
         Generate Voronoi cells using k-medians clustering of raypaths.
         """
@@ -573,7 +573,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _projected_ray_idxs(self, raypath, hvratio = 5.0):
+    def _projected_ray_idxs(self, raypath):
         """
         Return the cell IDs (column IDs) of each segment of the given
         raypath and the length of each segment in counts.
@@ -677,8 +677,7 @@ class InversionIterator(object):
             nevent = self.cfg["algorithm"]["nevent"]
 
             # Sample events.
-            events = self.events.sample(n=nevent, weights='weights')
-
+            events = self.events.sample(n=nevent, weights="weight")
             self.sampled_events = events
 
         self.synchronize(attrs=["sampled_events"])
@@ -828,7 +827,6 @@ class InversionIterator(object):
     @_utilities.log_errors(logger)
     def _update_events_weights(
         self,
-        phase: str,
         npts: int=16,
         bandwidth: float=0.1
     ) -> bool:
@@ -870,16 +868,14 @@ class InversionIterator(object):
             interpolator = scipy.interpolate.RegularGridInterpolator(points, values)
 
             # Assign weights to the arrivals.
-            events["weight"] = 1 / np.exp(interpolator(data))
+            if self.iiter<2:
+                events["weight"] = 1.0 / interpolator(data)
+            elif 2<=self.iiter<4:
+                events["weight"] = 1.0 / np.exp(interpolator(data))
+            else:
+                events["weight"] = 1.0
 
-            # Update the self.arrivals attribute with weights.
-            index_columns = ["event_id"]
-            _events = self.events.set_index(index_columns)
-            _events = _events.sort_index()
-            idx = events.index
-            _events.loc[idx, "weight"] = events["weight"]
-            _events = _events.reset_index()
-            self.events = _events
+            self.events = events
 
         self.synchronize(attrs=["events"])
 
@@ -992,7 +988,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _update_projection_matrix(self, hvratio = 5.0):
+    def _update_projection_matrix(self):
         """
         Update the projection matrix using the current Voronoi cells.
         """
