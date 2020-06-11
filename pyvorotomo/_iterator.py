@@ -328,6 +328,8 @@ class InversionIterator(object):
         conlim = self.cfg["algorithm"]["conlim"]
         maxiter = self.cfg["algorithm"]["maxiter"]
 
+        nvoronoi = len(self.voronoi_cells)
+
         result = scipy.sparse.linalg.lsmr(
             self.sensitivity_matrix,
             self.residuals,
@@ -339,7 +341,7 @@ class InversionIterator(object):
             show=False
         )
         x, istop, itn, normr, normar, norma, conda, normx = result
-        delta_slowness = self.projection_matrix * x
+        delta_slowness = self.projection_matrix * x[:nvoronoi]
         delta_slowness = delta_slowness.reshape(model.npts)
         slowness = np.power(model.values, -1) + delta_slowness
         velocity = np.power(slowness, -1)
@@ -366,6 +368,13 @@ class InversionIterator(object):
         arrivals = self.sampled_arrivals.set_index(index_keys)
 
         arrivals = arrivals.sort_index()
+
+        stationused = self.sampled_arrivals[index_keys]
+        stationused = stationused.drop_duplicates().reset_index()
+        stationused['idx'] = range(len(stationused))
+        stationused = stationused.set_index(index_keys)
+        nstation = stationused['idx'].max()+1
+
 
         if RANK == ROOT_RANK:
 
@@ -399,7 +408,7 @@ class InversionIterator(object):
 
             matrix = scipy.sparse.coo_matrix(
                 (nonzero_values, (row_idxs, column_idxs)),
-                shape=(len(nsegments), nvoronoi)
+                shape=(len(nsegments), nvoronoi+nstation)
             )
 
             self.sensitivity_matrix = matrix
@@ -408,6 +417,7 @@ class InversionIterator(object):
         else:
 
 
+            nvoronoi = len(self.voronoi_cells)
             column_idxs = np.array([], dtype=_constants.DTYPE_INT)
             nsegments = np.array([], dtype=_constants.DTYPE_INT)
             nonzero_values = np.array([], dtype=_constants.DTYPE_REAL)
@@ -437,6 +447,8 @@ class InversionIterator(object):
                 _arrivals = arrivals.loc[[(network, station)]]
                 _arrivals = _arrivals.set_index("event_id")
 
+                station_idxs = stationused['idx'].loc[[(network,station)]]+nvoronoi
+
                 # Open the raypath file.
                 filename = f"{network}.{station}.{phase}.h5"
                 path = os.path.join(raypath_dir, filename)
@@ -451,9 +463,12 @@ class InversionIterator(object):
                     raypath = np.stack(raypath).T
 
                     _column_idxs, counts = self._projected_ray_idxs(raypath)
+                    _column_idxs = np.append(_column_idxs,station_idxs)
                     column_idxs = np.append(column_idxs, _column_idxs)
                     nsegments = np.append(nsegments, len(_column_idxs))
-                    nonzero_values = np.append(nonzero_values, counts * step_size)
+                    _nonzero_values = counts * step_size
+                    _nonzero_values = np.append(_nonzero_values,1)
+                    nonzero_values = np.append(nonzero_values, _nonzero_values)
                     residuals = np.append(residuals, arrival["residual"])
 
                 raypath_file.close()
@@ -521,6 +536,10 @@ class InversionIterator(object):
 
             k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
+            #if k_medians_npts == 0:
+            #    self.voronoi_cells = base_cells
+
+            #else:
             raypaths = []
             raypath_dir = self.raypath_dir
 
@@ -545,6 +564,7 @@ class InversionIterator(object):
                 idxs = events.loc[event_ids, "idx"]
                 idxs = np.sort(idxs)
 
+                # bug here for small no. of events
                 _points = raypath_file[phase][:, idxs]
                 if _points.ndim > 1:
                     _points = np.apply_along_axis(np.concatenate, 1, _points)
@@ -1554,21 +1574,6 @@ class InversionIterator(object):
                     f"without associated events."
                 )
 
-            # Drop arrivals without stations.
-            n0 = len(self.arrivals)
-            stations = self.stations.set_index(["network", "station"])
-            idx_keep = stations.index.unique()
-            arrivals = self.arrivals.set_index(["network", "station"])
-            arrivals = arrivals.loc[idx_keep]
-            arrivals = arrivals.reset_index()
-            self.arrivals = arrivals
-            dn = n0 - len(self.arrivals)
-            if dn > 0:
-                logger.info(
-                    f"Dropped {dn} arrival{'s' if dn > 1 else ''} without "
-                    f"associated stations."
-                )
-
 
             # Drop stations without arrivals.
             n0 = len(self.stations)
@@ -1583,6 +1588,21 @@ class InversionIterator(object):
                 logger.info(
                     f"Dropped {dn} station{'s' if dn > 1 else ''} without "
                     f"associated arrivals."
+                )
+
+            # Drop arrivals without stations.
+            n0 = len(self.arrivals)
+            stations = self.stations.set_index(["network", "station"])
+            idx_keep = stations.index.unique()
+            arrivals = self.arrivals.set_index(["network", "station"])
+            arrivals = arrivals.loc[idx_keep]
+            arrivals = arrivals.reset_index()
+            self.arrivals = arrivals
+            dn = n0 - len(self.arrivals)
+            if dn > 0:
+                logger.info(
+                    f"Dropped {dn} arrival{'s' if dn > 1 else ''} without "
+                    f"associated stations."
                 )
 
 
