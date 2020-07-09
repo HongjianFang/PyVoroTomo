@@ -81,7 +81,10 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             self._f5_workspace.close()
-        shutil.rmtree(self.scratch_dir)
+            try:
+                shutil.rmtree(self.scratch_dir)
+            except:
+                print("something wrong with rmtree")
 
 
     def __enter__(self):
@@ -676,8 +679,8 @@ class InversionIterator(object):
             arrivals = remove_outliers(arrivals, tukey_k, "residual")
 
             # Sample arrivals.
-            replace = True if narrival > len(arrivals) else False
-            arrivals = arrivals.sample(n=narrival, weights="weight", replace=replace)
+            narrival = min(len(arrivals), narrival)
+            arrivals = arrivals.sample(n=narrival, weights="weight")
 
             self.sampled_arrivals = arrivals
 
