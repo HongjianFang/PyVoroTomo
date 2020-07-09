@@ -81,11 +81,7 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             self._f5_workspace.close()
-            try:
-                shutil.rmtree(self.scratch_dir)
-            except:
-                print("something wrong with rmtree")
-
+            shutil.rmtree(self.scratch_dir)
 
     def __enter__(self):
 
@@ -344,6 +340,11 @@ class InversionIterator(object):
             show=False
         )
         x, istop, itn, normr, normar, norma, conda, normx = result
+        logger.info(f"||G||         = {norma:8.1f}")
+        logger.info(f"||Gm-d||      = {normr:8.1f}")
+        logger.info(f"||m||         = {normx:8.1f}")
+        logger.info(f"||G^-1||||G|| = {conda:8.1f}")
+
         delta_slowness = self.projection_matrix * x[:nvoronoi]
         delta_slowness = delta_slowness.reshape(model.npts)
         slowness = np.power(model.values, -1) + delta_slowness
@@ -537,58 +538,56 @@ class InversionIterator(object):
             base_cells_tp = np.random.rand(nvoronoi, 2) * delta[1:] + min_coords[1:]
             base_cells = np.hstack([base_cells_rho, base_cells_tp])
 
-            k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
+            self.voronoi_cells = base_cells
 
-            #if k_medians_npts == 0:
-            #    self.voronoi_cells = base_cells
+            if kvoronoi > 0:
+                k_medians_npts = self.cfg["algorithm"]["k_medians_npts"]
 
-            #else:
-            raypaths = []
-            raypath_dir = self.raypath_dir
+                raypaths = []
+                raypath_dir = self.raypath_dir
 
-            columns = ["network", "station"]
-            arrivals = self.sampled_arrivals.set_index(columns)
-            arrivals = arrivals.sort_index()
-            index = arrivals.index.unique()
+                columns = ["network", "station"]
+                arrivals = self.sampled_arrivals.set_index(columns)
+                arrivals = arrivals.sort_index()
+                index = arrivals.index.unique()
 
-            events = self.events.set_index("event_id")
-            events["idx"] = np.arange(len(events))
+                events = self.events.set_index("event_id")
+                events["idx"] = np.arange(len(events))
 
-            points = np.empty((0, 3))
+                points = np.empty((0, 3))
 
-            for network, station in index:
+                for network, station in index:
 
-                # Open the raypath file.
-                filename = f"{network}.{station}.{phase}.h5"
-                path = os.path.join(raypath_dir, filename)
-                raypath_file = h5py.File(path, mode="r")
+                    # Open the raypath file.
+                    filename = f"{network}.{station}.{phase}.h5"
+                    path = os.path.join(raypath_dir, filename)
+                    raypath_file = h5py.File(path, mode="r")
 
-                event_ids = arrivals.loc[[(network, station)], "event_id"]
-                idxs = events.loc[event_ids, "idx"]
-                idxs = np.sort(idxs)
+                    event_ids = arrivals.loc[[(network, station)], "event_id"]
+                    idxs = events.loc[event_ids, "idx"]
+                    idxs = np.sort(idxs)
 
-                # bug here for small no. of events
-                _points = raypath_file[phase][:, idxs]
-                if _points.ndim > 1:
-                    _points = np.apply_along_axis(np.concatenate, 1, _points)
-                else:
-                    _points = np.stack(_points)
-                _points = _points.T
+                    _points = raypath_file[phase][:, idxs]
+                    if _points.ndim > 1:
+                        _points = np.apply_along_axis(np.concatenate, 1, _points)
+                    else:
+                        _points = np.stack(_points)
+                    _points = _points.T
 
-                points = np.vstack([points, _points])
+                    points = np.vstack([points, _points])
 
-            idxs = np.arange(len(points))
-            idxs = np.random.choice(idxs, k_medians_npts, replace=False)
-            points = points[idxs]
+                idxs = np.arange(len(points))
+                idxs = np.random.choice(idxs, k_medians_npts, replace=False)
+                points = points[idxs]
 
-            medians = _clustering.k_medians(kvoronoi, points)
-            rho_max = medians[:, 0].max()
-            medians_rho = rho_max  -  (rho_max - medians[:, 0]) * hvr
-            medians_rho = medians_rho.reshape(kvoronoi, 1)
-            medians_tp = medians[:, 1:]
-            medians = np.hstack([medians_rho, medians_tp])
+                medians = _clustering.k_medians(kvoronoi, points)
+                rho_max = medians[:, 0].max()
+                medians_rho = rho_max  -  (rho_max - medians[:, 0]) * hvr
+                medians_rho = medians_rho.reshape(kvoronoi, 1)
+                medians_tp = medians[:, 1:]
+                medians = np.hstack([medians_rho, medians_tp])
 
-            self.voronoi_cells = np.vstack([base_cells, medians])
+                self.voronoi_cells = np.vstack([self.voronoi_cells, medians])
 
         self.synchronize(attrs=["voronoi_cells"])
 
@@ -1446,73 +1445,71 @@ class InversionIterator(object):
 
             # Initialize EQLocator object.
             _path = self.traveltime_inventory_path
-            locator = pykonal.locate.EQLocator(
-                station_dict(self.stations),
-                _path
-            )
+            _station_dict = station_dict(self.stations)
 
-            # Create some aliases for configuration-file parameters.
-            depth_min = self.cfg["relocate"]["depth_min"]
-            dlat = self.cfg["relocate"]["dlat"]
-            dlon = self.cfg["relocate"]["dlon"]
-            dz = self.cfg["relocate"]["ddepth"]
-            dt = self.cfg["relocate"]["dtime"]
+            with pykonal.locate.EQLocator(_station_dict, _path) as locator:
 
-            # Convert configuration-file parameters from geographic to
-            # spherical coordinates
-            rho_max = _constants.EARTH_RADIUS - depth_min
-            dtheta = np.radians(dlat)
-            dphi = np.radians(dlon)
+                # Create some aliases for configuration-file parameters.
+                depth_min = self.cfg["relocate"]["depth_min"]
+                dlat = self.cfg["relocate"]["dlat"]
+                dlon = self.cfg["relocate"]["dlon"]
+                dz = self.cfg["relocate"]["ddepth"]
+                dt = self.cfg["relocate"]["dtime"]
 
-            # Initialize the search region.
-            delta = np.array([dz, dtheta, dphi, dt])
+                # Convert configuration-file parameters from geographic to
+                # spherical coordinates
+                rho_max = _constants.EARTH_RADIUS - depth_min
+                dtheta = np.radians(dlat)
+                dphi = np.radians(dlon)
 
-            events = self.events
-            events = events.set_index("event_id")
+                # Initialize the search region.
+                delta = np.array([dz, dtheta, dphi, dt])
 
-            # Initialize empty DataFrame for updated event locations.
-            relocated_events = pd.DataFrame()
+                events = self.events
+                events = events.set_index("event_id")
 
-            while True:
+                # Initialize empty DataFrame for updated event locations.
+                relocated_events = pd.DataFrame()
 
-                # Request an event
-                event_id = self._request_dispatch()
+                while True:
 
-                if event_id is None:
-                    logger.debug("Received sentinel, gathering events.")
-                    COMM.gather(relocated_events, root=ROOT_RANK)
+                    # Request an event
+                    event_id = self._request_dispatch()
 
-                    break
+                    if event_id is None:
+                        logger.debug("Received sentinel, gathering events.")
+                        COMM.gather(relocated_events, root=ROOT_RANK)
 
-                logger.debug(f"Received event ID #{event_id}")
+                        break
 
-                # Extract the initial event location and convert to
-                # spherical coordinates.
-                _columns = ["latitude", "longitude", "depth", "time"]
-                initial = events.loc[event_id, _columns].values
-                initial[:3] = geo2sph(initial[:3])
+                    logger.debug(f"Received event ID #{event_id}")
 
-                # Clear previous event's arrivals from EQLocator.
-                locator.clear_arrivals()
+                    # Extract the initial event location and convert to
+                    # spherical coordinates.
+                    _columns = ["latitude", "longitude", "depth", "time"]
+                    initial = events.loc[event_id, _columns].values
+                    initial[:3] = geo2sph(initial[:3])
 
-                # Update EQLocator with arrivals for this event.
-                _arrivals = arrival_dict(self.arrivals, event_id)
-                locator.add_arrivals(_arrivals)
+                    # Clear previous event's arrivals from EQLocator.
+                    locator.clear_arrivals()
 
-                # Relocate the event.
-                loc = locator.locate(initial, delta)
-                loc[0] = min(loc[0], rho_max)
-                logger.debug(loc)
+                    # Update EQLocator with arrivals for this event.
+                    _arrivals = arrival_dict(self.arrivals, event_id)
+                    locator.add_arrivals(_arrivals)
 
-                # Get residual RMS, reformat result, and append to
-                # relocated_events DataFrame.
-                rms = locator.rms(loc)
-                loc[:3] = sph2geo(loc[:3])
-                event = pd.DataFrame(
-                    [np.concatenate((loc, [rms, event_id]))],
-                    columns=columns
-                )
-                relocated_events = relocated_events.append(event, ignore_index=True)
+                    # Relocate the event.
+                    loc = locator.locate(initial, delta)
+                    loc[0] = min(loc[0], rho_max)
+
+                    # Get residual RMS, reformat result, and append to
+                    # relocated_events DataFrame.
+                    rms = locator.rms(loc)
+                    loc[:3] = sph2geo(loc[:3])
+                    event = pd.DataFrame(
+                        [np.concatenate((loc, [rms, event_id]))],
+                        columns=columns
+                    )
+                    relocated_events = relocated_events.append(event, ignore_index=True)
 
         self.synchronize(attrs=["events"])
 
@@ -1727,7 +1724,7 @@ class InversionIterator(object):
 
         logger.info("Updating arrival residuals.")
 
-        arrivals = self.arrivals.set_index(["network", "station", "phase", "event_id"])
+        arrivals = self.arrivals.set_index(["network", "station", "phase"])
         arrivals = arrivals.sort_index()
 
         if RANK == ROOT_RANK:
@@ -1761,7 +1758,7 @@ class InversionIterator(object):
                         break
 
 
-                    network, station, phase, event_id = item
+                    network, station, phase = item
                     handle = "/".join([network, station, phase])
 
                     if handle != last_handle:
@@ -1769,22 +1766,24 @@ class InversionIterator(object):
                         traveltime = traveltime_inventory.read(handle)
                         last_handle = handle
 
-                    arrival_time = arrivals.loc[(network, station, phase, event_id), "time"]
+                    _arrivals = arrivals.loc[(network, station, phase)]
+                    _events = events.loc[_arrivals["event_id"].values]
+                    arrival_times = _arrivals["time"].values
 
-                    origin_time = events.loc[event_id, "time"]
-                    coords = events.loc[event_id, ["latitude", "longitude", "depth"]]
+                    origin_times = _events["time"].values
+                    coords = _events[["latitude", "longitude", "depth"]].values
                     coords = geo2sph(coords)
-                    residual = arrival_time - (origin_time + traveltime.value(coords))
-                    arrival = dict(
+                    residuals = arrival_times - (origin_times + traveltime.resample(coords))
+                    _arrivals = dict(
                         network=network,
                         station=station,
                         phase=phase,
-                        event_id=event_id,
-                        time=arrival_time,
-                        residual=residual
+                        event_id=_arrivals["event_id"].values,
+                        time=arrival_times,
+                        residual=residuals
                     )
-                    arrival = pd.DataFrame([arrival])
-                    updated_arrivals = updated_arrivals.append(arrival, ignore_index=True)
+                    _arrivals = pd.DataFrame(_arrivals)
+                    updated_arrivals = updated_arrivals.append(_arrivals, ignore_index=True)
 
         self.synchronize(attrs=["arrivals"])
 
@@ -1803,7 +1802,7 @@ class InversionIterator(object):
 
             handle = f"{phase}wave_realization_stack"
             stack = getattr(self, handle)
-            values = np.mean(stack, axis=0)
+            values = np.median(stack, axis=0)
             variance = np.var(stack, axis=0)
 
             handle = f"{phase}wave_model"
