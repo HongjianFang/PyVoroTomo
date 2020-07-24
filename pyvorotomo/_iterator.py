@@ -359,7 +359,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _compute_sensitivity_matrix(self, phase):
+    def _compute_sensitivity_matrix(self, phase, hvr=1):
         """
         Compute the sensitivity matrix.
         """
@@ -456,7 +456,7 @@ class InversionIterator(object):
                     raypath = raypath_file[phase][:, idx]
                     raypath = np.stack(raypath).T
 
-                    _column_idxs, counts = self._projected_ray_idxs(raypath)
+                    _column_idxs, counts = self._projected_ray_idxs(raypath, hvr=hvr)
                     column_idxs = np.append(column_idxs, _column_idxs)
                     nsegments = np.append(nsegments, len(_column_idxs))
                     nonzero_values = np.append(nonzero_values, counts * step_size)
@@ -574,13 +574,12 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _projected_ray_idxs(self, raypath):
+    def _projected_ray_idxs(self, raypath, hvr=1):
         """
         Return the cell IDs (column IDs) of each segment of the given
         raypath and the length of each segment in counts.
         """
 
-        hvr = self.cfg["algorithm"]["hvr"]
         min_coords = self.pwave_model.min_coords
         max_coords = self.pwave_model.max_coords
         center = (min_coords + max_coords) / 2
@@ -875,7 +874,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _update_projection_matrix(self):
+    def _update_projection_matrix(self, hvr=1):
         """
         Update the projection matrix using the current Voronoi cells.
         """
@@ -885,7 +884,6 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             nvoronoi = len(self.voronoi_cells)
-            hvr = self.cfg["algorithm"]["hvr"]
             min_coords = self.pwave_model.min_coords
             max_coords = self.pwave_model.max_coords
             center = (min_coords + max_coords) / 2
@@ -1001,6 +999,7 @@ class InversionIterator(object):
         output_dir = self.argc.output_dir
 
         niter = self.cfg["algorithm"]["niter"]
+        hvrs = self.cfg["algorithm"]["hvr"]
         kvoronoi = self.cfg["algorithm"]["kvoronoi"]
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
         nreal = self.cfg["algorithm"]["nreal"]
@@ -1012,21 +1011,24 @@ class InversionIterator(object):
 
         for phase in self.phases:
             logger.info(f"Updating {phase}-wave model")
-            self._reset_realization_stack(phase)
             self._update_arrival_weights(phase)
-            for self.ireal in range(nreal):
-                logger.info(f"Realization #{self.ireal+1} (/{nreal}).")
-                self._sample_events()
-                self._sample_arrivals(phase)
-                self._trace_rays(phase)
-                self._generate_voronoi_cells(
-                    phase,
-                    kvoronoi,
-                    nvoronoi
-                )
-                self._update_projection_matrix()
-                self._compute_sensitivity_matrix(phase)
-                self._compute_model_update(phase)
+            for hvr in hvrs:
+                self._reset_realization_stack(phase)
+                for self.ireal in range(nreal):
+                    logger.info(
+                        f"Realization #{self.ireal+1} (/{nreal}) with hvr = {hvr}."
+                    )
+                    self._sample_events()
+                    self._sample_arrivals(phase)
+                    self._trace_rays(phase)
+                    self._generate_voronoi_cells(
+                        phase,
+                        kvoronoi,
+                        nvoronoi
+                    )
+                    self._update_projection_matrix(hvr=hvr)
+                    self._compute_sensitivity_matrix(phase, hvr=hvr)
+                    self._compute_model_update(phase)
             self.update_model(phase)
             self.save_model(phase)
         self.compute_traveltime_lookup_tables()

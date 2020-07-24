@@ -258,10 +258,11 @@ def parse_cfg(configuration_file):
         "algorithm",
         "nvoronoi"
     )
-    _cfg["hvr"] = parser.getfloat(
-        "algorithm",
-        "hvr"
-    )
+    _cfg["hvr"] = [int(v) for v in parser.get(
+            "algorithm",
+            "hvr"
+        ).split(",")
+    ]
     _cfg["nreal"] = parser.getint(
         "algorithm",
         "nreal"
