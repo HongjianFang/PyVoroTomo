@@ -503,7 +503,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi):
+    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi, alpha):
         """
         Generate Voronoi cells using k-medians clustering of raypaths.
         """
@@ -519,8 +519,14 @@ class InversionIterator(object):
             max_coords = self.pwave_model.max_coords
 
             delta = max_coords - min_coords
-            base_cells = np.random.rand(nvoronoi, 3) * delta  +  min_coords
 
+            if alpha == 0:
+                rho = np.random.rand(nvoronoi, 1) * delta[0] + min_coords[0]
+            else:
+                rho = max_coords[0] - np.random.pareto(alpha, size=(nvoronoi, 1)) * delta[0]
+            theta_phi = np.random.rand(nvoronoi, 2) * delta[1:]  +  min_coords[1:]
+
+            base_cells = np.hstack([rho, theta_phi])
             self.voronoi_cells = base_cells
 
             if kvoronoi > 0:
@@ -1002,6 +1008,7 @@ class InversionIterator(object):
         hvrs = self.cfg["algorithm"]["hvr"]
         kvoronoi = self.cfg["algorithm"]["kvoronoi"]
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
+        alpha = self.cfg["algorithm"]["paretos_alpha"]
         nreal = self.cfg["algorithm"]["nreal"]
         relocation_method = self.cfg["relocate"]["method"]
 
@@ -1024,7 +1031,8 @@ class InversionIterator(object):
                     self._generate_voronoi_cells(
                         phase,
                         kvoronoi,
-                        nvoronoi
+                        nvoronoi,
+                        alpha
                     )
                     self._update_projection_matrix(hvr=hvr)
                     self._compute_sensitivity_matrix(phase, hvr=hvr)
