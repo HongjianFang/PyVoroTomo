@@ -1017,10 +1017,12 @@ class InversionIterator(object):
         logger.info(f"Iteration #{self.iiter} (/{niter}).")
 
         for phase in self.phases:
-            logger.info(f"Updating {phase}-wave model")
             self._update_arrival_weights(phase)
-            for hvr in hvrs:
-                self._reset_realization_stack(phase)
+
+        for hvr in hvrs:
+            self._reset_realization_stack(phase)
+            for phase in self.phases:
+                logger.info(f"Updating {phase}-wave model")
                 for self.ireal in range(nreal):
                     logger.info(
                         f"Realization #{self.ireal+1} (/{nreal}) with hvr = {hvr}."
@@ -1037,11 +1039,11 @@ class InversionIterator(object):
                     self._update_projection_matrix(hvr=hvr)
                     self._compute_sensitivity_matrix(phase, hvr=hvr)
                     self._compute_model_update(phase)
-            self.update_model(phase)
-            self.save_model(phase)
-        self.compute_traveltime_lookup_tables()
-        self.relocate_events(method=relocation_method)
-        self.purge_raypaths()
+                self.update_model(phase)
+                self.save_model(phase, tag=f"h{hvr}")
+            self.compute_traveltime_lookup_tables()
+            self.relocate_events(method=relocation_method)
+            self.purge_raypaths()
         self.update_arrival_residuals()
         self.save_events()
 
@@ -1518,7 +1520,7 @@ class InversionIterator(object):
 
     @_utilities.log_errors(logger)
     @_utilities.root_only(RANK)
-    def save_model(self, phase: str) -> bool:
+    def save_model(self, phase, tag=None):
         """
         Save model data to disk for single phase.
 
@@ -1531,8 +1533,9 @@ class InversionIterator(object):
         path = os.path.join(self.argc.output_dir, f"{self.iiter:02d}")
 
         handle = f"{phase}wave_model"
+        label = f"{handle}.{tag}" if tag is not None else handle
         model = getattr(self, handle)
-        model.to_hdf(path + f".{handle}.h5")
+        model.to_hdf(path + f".{label}.h5")
 
         if self.iiter == 0:
 
@@ -1540,12 +1543,14 @@ class InversionIterator(object):
 
         handle = f"{phase}wave_variance"
         model = getattr(self, handle)
-        model.to_hdf(path + f".{handle}.h5")
+        label = f"{handle}.{tag}" if tag is not None else handle
+        model.to_hdf(path + f".{label}.h5")
 
         if self.argc.output_realizations is True:
             handle = f"{phase}wave_realization_stack"
+            label = f"{handle}.{tag}" if tag is not None else handle
             stack = getattr(self, handle)
-            with h5py.File(path + f".{handle}.h5", mode="w") as f5:
+            with h5py.File(path + f".{label}.h5", mode="w") as f5:
                 f5.create_dataset(
                     f"{phase}wave_stack",
                     data=stack[:]
