@@ -359,7 +359,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _compute_sensitivity_matrix(self, phase):
+    def _compute_sensitivity_matrix(self, phase, hvr=1):
         """
         Compute the sensitivity matrix.
         """
@@ -466,8 +466,7 @@ class InversionIterator(object):
                     raypath = raypath_file[phase][:, idx]
                     raypath = np.stack(raypath).T
 
-                    _column_idxs, counts = self._projected_ray_idxs(raypath)
-                    _column_idxs = np.append(_column_idxs,station_idxs)
+                    _column_idxs, counts = self._projected_ray_idxs(raypath, hvr=hvr)
                     column_idxs = np.append(column_idxs, _column_idxs)
                     nsegments = np.append(nsegments, len(_column_idxs))
                     _nonzero_values = counts * step_size
@@ -516,7 +515,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi):
+    def _generate_voronoi_cells(self, phase, kvoronoi, nvoronoi, alpha):
         """
         Generate Voronoi cells using k-medians clustering of raypaths.
         """
@@ -530,14 +529,16 @@ class InversionIterator(object):
 
             min_coords = self.pwave_model.min_coords
             max_coords = self.pwave_model.max_coords
-            hvr = self.cfg["algorithm"]["hvr"]
 
             delta = max_coords - min_coords
-            rho_min = max_coords[0] - delta[0] * hvr
-            base_cells_rho = np.random.rand(nvoronoi, 1) * delta[0] * hvr  +  rho_min
-            base_cells_tp = np.random.rand(nvoronoi, 2) * delta[1:] + min_coords[1:]
-            base_cells = np.hstack([base_cells_rho, base_cells_tp])
 
+            if alpha == 0:
+                rho = np.random.rand(nvoronoi, 1) * delta[0] + min_coords[0]
+            else:
+                rho = max_coords[0] - np.random.pareto(alpha, size=(nvoronoi, 1)) * delta[0]
+            theta_phi = np.random.rand(nvoronoi, 2) * delta[1:]  +  min_coords[1:]
+
+            base_cells = np.hstack([rho, theta_phi])
             self.voronoi_cells = base_cells
 
             if kvoronoi > 0:
@@ -581,11 +582,6 @@ class InversionIterator(object):
                 points = points[idxs]
 
                 medians = _clustering.k_medians(kvoronoi, points)
-                rho_max = medians[:, 0].max()
-                medians_rho = rho_max  -  (rho_max - medians[:, 0]) * hvr
-                medians_rho = medians_rho.reshape(kvoronoi, 1)
-                medians_tp = medians[:, 1:]
-                medians = np.hstack([medians_rho, medians_tp])
 
                 self.voronoi_cells = np.vstack([self.voronoi_cells, medians])
 
@@ -595,19 +591,23 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _projected_ray_idxs(self, raypath):
+    def _projected_ray_idxs(self, raypath, hvr=1):
         """
         Return the cell IDs (column IDs) of each segment of the given
         raypath and the length of each segment in counts.
         """
 
-        hvr = self.cfg["algorithm"]["hvr"]
-        voronoi_cells = sph2xyz(self.voronoi_cells)
+        min_coords = self.pwave_model.min_coords
+        max_coords = self.pwave_model.max_coords
+        center = (min_coords + max_coords) / 2
+
+        voronoi_cells = self.voronoi_cells
+        voronoi_cells = center + (voronoi_cells - center) / [1, hvr, hvr]
+
+        voronoi_cells = sph2xyz(voronoi_cells)
         tree = scipy.spatial.cKDTree(voronoi_cells)
 
-        rho_max = raypath[:, 0].max()
-        raypath[:, 0] = rho_max   -   (rho_max - raypath[:, 0])  *  hvr
-
+        raypath = center + (raypath - center) / [1, hvr, hvr]
         raypath = sph2xyz(raypath)
 
         _, column_idxs = tree.query(raypath)
@@ -1010,7 +1010,7 @@ class InversionIterator(object):
 
 
     @_utilities.log_errors(logger)
-    def _update_projection_matrix(self):
+    def _update_projection_matrix(self, hvr=1):
         """
         Update the projection matrix using the current Voronoi cells.
         """
@@ -1020,16 +1020,19 @@ class InversionIterator(object):
         if RANK == ROOT_RANK:
 
             nvoronoi = len(self.voronoi_cells)
-            hvr = self.cfg["algorithm"]["hvr"]
+            min_coords = self.pwave_model.min_coords
+            max_coords = self.pwave_model.max_coords
+            center = (min_coords + max_coords) / 2
 
-            voronoi_cells = sph2xyz(self.voronoi_cells)
+            voronoi_cells = self.voronoi_cells
+            voronoi_cells = center + (voronoi_cells - center) / [1, hvr, hvr]
+
+            voronoi_cells = sph2xyz(voronoi_cells)
             tree = scipy.spatial.cKDTree(voronoi_cells)
-            nodes = self.pwave_model.nodes.reshape(-1, 3)
 
-            rho_max = nodes[:, 0].max()
-            rho = rho_max   -   (rho_max - nodes[:, 0])  *  hvr
-            nodes[:, 0] = rho
-
+            nodes = self.pwave_model.nodes
+            nodes = center + (nodes - center) / [1, hvr, hvr]
+            nodes = nodes.reshape(-1, 3)
             nodes = sph2xyz(nodes)
 
             _, column_ids = tree.query(nodes)
@@ -1134,8 +1137,10 @@ class InversionIterator(object):
         output_dir = self.argc.output_dir
 
         niter = self.cfg["algorithm"]["niter"]
+        hvrs = self.cfg["algorithm"]["hvr"]
         kvoronoi = self.cfg["algorithm"]["kvoronoi"]
         nvoronoi = self.cfg["algorithm"]["nvoronoi"]
+        alpha = self.cfg["algorithm"]["paretos_alpha"]
         nreal = self.cfg["algorithm"]["nreal"]
         relocation_method = self.cfg["relocate"]["method"]
 
@@ -1144,28 +1149,32 @@ class InversionIterator(object):
         logger.info(f"Iteration #{self.iiter} (/{niter}).")
 
         for phase in self.phases:
-            logger.info(f"Updating {phase}-wave model")
-            self._reset_realization_stack(phase)
             self._update_arrival_weights(phase)
-            self._update_events_weights()
-            for self.ireal in range(nreal):
-                logger.info(f"Realization #{self.ireal+1} (/{nreal}).")
-                self._sample_events()
-                self._sample_arrivals(phase)
-                self._trace_rays(phase)
-                self._generate_voronoi_cells(
-                    phase,
-                    kvoronoi,
-                    nvoronoi
-                )
-                self._update_projection_matrix()
-                self._compute_sensitivity_matrix(phase)
-                self._compute_model_update(phase)
-            self.update_model(phase)
-            self.save_model(phase)
-        self.compute_traveltime_lookup_tables()
-        self.relocate_events(method=relocation_method)
-        self.purge_raypaths()
+        for hvr in hvrs:
+            self._reset_realization_stack(phase)
+            for phase in self.phases:
+                logger.info(f"Updating {phase}-wave model")
+                for self.ireal in range(nreal):
+                    logger.info(
+                        f"Realization #{self.ireal+1} (/{nreal}) with hvr = {hvr}."
+                    )
+                    self._sample_events()
+                    self._sample_arrivals(phase)
+                    self._trace_rays(phase)
+                    self._generate_voronoi_cells(
+                        phase,
+                        kvoronoi,
+                        nvoronoi,
+                        alpha
+                    )
+                    self._update_projection_matrix(hvr=hvr)
+                    self._compute_sensitivity_matrix(phase, hvr=hvr)
+                    self._compute_model_update(phase)
+                self.update_model(phase)
+                self.save_model(phase, tag=f"h{hvr}")
+            self.compute_traveltime_lookup_tables()
+            self.relocate_events(method=relocation_method)
+            self.purge_raypaths()
         self.update_arrival_residuals()
         self.save_events()
 
@@ -1643,7 +1652,7 @@ class InversionIterator(object):
 
     @_utilities.log_errors(logger)
     @_utilities.root_only(RANK)
-    def save_model(self, phase: str) -> bool:
+    def save_model(self, phase, tag=None):
         """
         Save model data to disk for single phase.
 
@@ -1656,8 +1665,9 @@ class InversionIterator(object):
         path = os.path.join(self.argc.output_dir, f"{self.iiter:02d}")
 
         handle = f"{phase}wave_model"
+        label = f"{handle}.{tag}" if tag is not None else handle
         model = getattr(self, handle)
-        model.to_hdf(path + f".{handle}.h5")
+        model.to_hdf(path + f".{label}.h5")
 
         if self.iiter == 0:
 
@@ -1665,12 +1675,14 @@ class InversionIterator(object):
 
         handle = f"{phase}wave_variance"
         model = getattr(self, handle)
-        model.to_hdf(path + f".{handle}.h5")
+        label = f"{handle}.{tag}" if tag is not None else handle
+        model.to_hdf(path + f".{label}.h5")
 
         if self.argc.output_realizations is True:
             handle = f"{phase}wave_realization_stack"
+            label = f"{handle}.{tag}" if tag is not None else handle
             stack = getattr(self, handle)
-            with h5py.File(path + f".{handle}.h5", mode="w") as f5:
+            with h5py.File(path + f".{label}.h5", mode="w") as f5:
                 f5.create_dataset(
                     f"{phase}wave_stack",
                     data=stack[:]
