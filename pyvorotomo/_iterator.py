@@ -467,6 +467,7 @@ class InversionIterator(object):
                     raypath = np.stack(raypath).T
 
                     _column_idxs, counts = self._projected_ray_idxs(raypath, hvr=hvr)
+                    _column_idxs = np.append(_column_idxs,station_idxs)
                     column_idxs = np.append(column_idxs, _column_idxs)
                     nsegments = np.append(nsegments, len(_column_idxs))
                     _nonzero_values = counts * step_size
@@ -535,7 +536,9 @@ class InversionIterator(object):
             if alpha == 0:
                 rho = np.random.rand(nvoronoi, 1) * delta[0] + min_coords[0]
             else:
-                rho = max_coords[0] - np.random.pareto(alpha, size=(nvoronoi, 1)) * delta[0]
+                rho_base = np.random.rand(nvoronoi-kvoronoi, 1) * delta[0] + min_coords[0]
+                rho_refine = max_coords[0] - np.random.pareto(alpha, size=(kvoronoi, 1)) * delta[0]
+                rho = np.vstack([rho_base,rho_refine])
             theta_phi = np.random.rand(nvoronoi, 2) * delta[1:]  +  min_coords[1:]
 
             base_cells = np.hstack([rho, theta_phi])
@@ -699,7 +702,8 @@ class InversionIterator(object):
             nevent = self.cfg["algorithm"]["nevent"]
 
             # Sample events.
-            events = self.events.sample(n=nevent, weights="weight")
+            #events = self.events.sample(n=nevent, weights=None)
+            events = self.events.sample(n=nevent, weights='weight')
             self.sampled_events = events
 
         self.synchronize(attrs=["sampled_events"])
@@ -1150,6 +1154,7 @@ class InversionIterator(object):
 
         for phase in self.phases:
             self._update_arrival_weights(phase)
+            self._update_events_weights()
         for hvr in hvrs:
             self._reset_realization_stack(phase)
             for phase in self.phases:
