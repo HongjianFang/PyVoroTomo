@@ -347,13 +347,16 @@ class InversionIterator(object):
 
         delta_slowness = self.projection_matrix * x[:nvoronoi]
         delta_slowness = delta_slowness.reshape(model.npts)
-        slowness = np.power(model.values, -1) + delta_slowness
-        velocity = np.power(slowness, -1)
+        slowness = delta_slowness
+#        slowness = np.power(model.values, -1) + delta_slowness
+#        velocity = np.power(slowness, -1)
 
         if phase == "P":
-            self.pwave_realization_stack[self.ireal] = velocity
+#            self.pwave_realization_stack[self.ireal] = velocity
+            self.pwave_realization_stack[self.ireal] = slowness
         else:
-            self.swave_realization_stack[self.ireal] = velocity
+#            self.swave_realization_stack[self.ireal] = velocity
+            self.swave_realization_stack[self.ireal] = slowness
 
         return (True)
 
@@ -537,7 +540,10 @@ class InversionIterator(object):
                 rho = np.random.rand(nvoronoi, 1) * delta[0] + min_coords[0]
             else:
                 rho_base = np.random.rand(nvoronoi-kvoronoi, 1) * delta[0] + min_coords[0]
-                rho_refine = max_coords[0] - np.random.pareto(alpha, size=(kvoronoi, 1)) * delta[0]
+                #rho_refine = max_coords[0] - np.random.pareto(alpha, size=(kvoronoi, 1)) * delta[0]
+                randpts = np.random.gamma(2.0, alpha, size = (kvoronoi,1))
+                randpts = randpts / randpts.max()
+                rho_refine = max_coords[0] - randpts * delta[0]
                 rho = np.vstack([rho_base,rho_refine])
             theta_phi = np.random.rand(nvoronoi, 2) * delta[1:]  +  min_coords[1:]
 
@@ -1824,7 +1830,9 @@ class InversionIterator(object):
 
             handle = f"{phase}wave_model"
             model = getattr(self, handle)
-            model.values = values
+#            model.values = values
+            values = np.power(model.values, -1) + values
+            model.values = np.power(values, -1)
 
             handle = f"{phase}wave_variance"
             model = getattr(self, handle)
