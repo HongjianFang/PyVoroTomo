@@ -1002,7 +1002,12 @@ class InversionIterator(object):
             interpolator = scipy.interpolate.RegularGridInterpolator(points, values)
 
             # Assign weights to the arrivals.
-            arrivals["weight"] = 1 / np.exp(interpolator(data))
+            dataweight = 1 / np.exp(interpolator(data))
+            #arrivals["weight"] = dataweight
+            # revise this latter, remove data with distance large than 150km
+            idx = arrivals[arrivals['delta']>1.2].index
+            dataweight[idx] = dataweight.min()
+            arrivals["weight"] = dataweight
 
             # Update the self.arrivals attribute with weights.
             index_columns = ["network", "station", "event_id", "phase"]
