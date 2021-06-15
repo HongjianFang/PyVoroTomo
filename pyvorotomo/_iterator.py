@@ -687,8 +687,10 @@ class InversionIterator(object):
             arrivals = remove_outliers(arrivals, tukey_k, "residual")
 
             # Sample arrivals.
-            narrival = min(len(arrivals), narrival)
-            arrivals = arrivals.sample(n=narrival, weights="weight")
+            #narrival = min(len(arrivals), narrival)
+            narrival = int(len(arrivals)*0.8)
+            #arrivals = arrivals.sample(n=narrival, weights="weight")
+            arrivals = arrivals.sample(n=narrival)
 
             self.sampled_arrivals = arrivals
 
@@ -796,7 +798,7 @@ class InversionIterator(object):
         return (True)
 
     @_utilities.log_errors(logger)
-    def _update_arrival_weights_random(
+    def _update_events_weights_random(
         self,
         phase: str,
         npts: int=5000,
@@ -837,22 +839,35 @@ class InversionIterator(object):
             events_count = events_count.groupby(by='cell_id').count()
             events_count = events_count.reset_index()
             events_weight = events[['event_id','cell_id']].merge(events_count,on='cell_id')
-            events_weight['weight'] = 1.0/events_weight['latitude']
+            #print('sth is wrong 1')
+            #logger.info('sth is wrong 1')
+            #events_weight['weight'] = 1.0/events_weight['latitude']
+            events['weight'] = 1.0/events_weight['latitude']
 
-            arrivals = arrivals.merge(events_weight,on = 'event_id')
-            arrivals = arrivals.drop(columns=['latitude','cell_id'])
 
-            # Update the self.arrivals attribute with weights.
-            index_columns = ["network", "station", "event_id", "phase"]
-            arrivals = arrivals.set_index(index_columns)
-            _arrivals = self.arrivals.set_index(index_columns)
-            _arrivals = _arrivals.sort_index()
-            idx = arrivals.index
-            _arrivals.loc[idx, "weight"] = arrivals["weight"]
-            _arrivals = _arrivals.reset_index()
-            self.arrivals = _arrivals
+            #arrivals = arrivals.merge(events_weight,on = 'event_id')
+            #arrivals = arrivals.drop(columns=['latitude','cell_id'])
 
-        self.synchronize(attrs=["arrivals"])
+            ## Update the self.arrivals attribute with weights.
+            #index_columns = ["network", "station", "event_id", "phase"]
+            #arrivals = arrivals.set_index(index_columns)
+            #_arrivals = self.arrivals.set_index(index_columns)
+            #_arrivals = _arrivals.sort_index()
+            #idx = arrivals.index
+            #print('sth is wrong 2')
+            #logger.info('sth is wrong 2')
+            #_arrivals.loc[idx, "weight"] = arrivals["weight"]
+            #_arrivals = _arrivals.reset_index()
+            #self.arrivals = _arrivals
+
+            #events["weight"] = 1.0
+            self.events = events
+
+        self.synchronize(attrs=["events"])
+
+
+
+        #self.synchronize(attrs=["arrivals"])
 
         return (True)
 
@@ -1159,8 +1174,8 @@ class InversionIterator(object):
         logger.info(f"Iteration #{self.iiter} (/{niter}).")
 
         for phase in self.phases:
-            self._update_arrival_weights(phase)
-            self._update_events_weights()
+            #self._update_arrival_weights_random(phase)
+            self._update_events_weights_random(phase)
         for hvr in hvrs:
             self._reset_realization_stack(phase)
             for phase in self.phases:
@@ -1600,7 +1615,8 @@ class InversionIterator(object):
             arrivals = self.arrivals.set_index(["network", "station"])
             idx_keep = arrivals.index.unique()
             stations = self.stations.set_index(["network", "station"])
-            stations = stations.loc[idx_keep]
+            stations = stations[stations.index.isin(idx_keep)]
+            #stations = stations.loc[idx_keep]
             stations = stations.reset_index()
             self.stations = stations
             dn = n0 - len(self.stations)
@@ -1615,7 +1631,8 @@ class InversionIterator(object):
             stations = self.stations.set_index(["network", "station"])
             idx_keep = stations.index.unique()
             arrivals = self.arrivals.set_index(["network", "station"])
-            arrivals = arrivals.loc[idx_keep]
+            #arrivals = arrivals.loc[idx_keep]
+            arrivals = arrivals[arrivals.index.isin(idx_keep)]
             arrivals = arrivals.reset_index()
             self.arrivals = arrivals
             dn = n0 - len(self.arrivals)
