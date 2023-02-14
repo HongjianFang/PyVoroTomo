@@ -1534,7 +1534,7 @@ class InversionIterator(object):
                         [np.concatenate((loc, [rms, event_id]))],
                         columns=columns
                     )
-                    relocated_events = relocated_events.append(event, ignore_index=True)
+                    relocated_events = pd.concat([relocated_events, pd.DataFrame.from_records(event)])
 
         self.synchronize(attrs=["events"])
 
@@ -1811,7 +1811,7 @@ class InversionIterator(object):
                         residual=residuals
                     )
                     _arrivals = pd.DataFrame(_arrivals)
-                    updated_arrivals = updated_arrivals.append(_arrivals, ignore_index=True)
+                    updated_arrivals = pd.concat([updated_arrivals, pd.DataFrame.from_records(_arrivals)])
 
         self.synchronize(attrs=["arrivals"])
 
