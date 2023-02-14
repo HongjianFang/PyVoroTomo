@@ -1472,7 +1472,7 @@ class InversionIterator(object):
             _path = self.traveltime_inventory_path
             _station_dict = station_dict(self.stations)
 
-            with pykonal.locate.EQLocator(_station_dict, _path) as locator:
+            with pykonal.locate.EQLocator(_path) as locator:
 
                 # Create some aliases for configuration-file parameters.
                 depth_min = self.cfg["relocate"]["depth_min"]
