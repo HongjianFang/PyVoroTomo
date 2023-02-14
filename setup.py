@@ -18,9 +18,9 @@ packages        = ["pyvorotomo"]
 required        = [
     "KDEpy>=1.0.3",
     "mpi4py",
-    "numpy",
+    "numpy>=1.24.0",
     "pandas",
-    "pykonal>=0.3.0a",
+    "pykonal>=0.2.3b4",
     "tables",
     "scipy"
 ]
