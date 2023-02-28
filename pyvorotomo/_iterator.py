@@ -1472,7 +1472,7 @@ class InversionIterator(object):
             _path = self.traveltime_inventory_path
             _station_dict = station_dict(self.stations)
 
-            with pykonal.locate.EQLocator(_station_dict, _path) as locator:
+            with pykonal.locate.EQLocator(_path) as locator:
 
                 # Create some aliases for configuration-file parameters.
                 depth_min = self.cfg["relocate"]["depth_min"]
@@ -1534,7 +1534,7 @@ class InversionIterator(object):
                         [np.concatenate((loc, [rms, event_id]))],
                         columns=columns
                     )
-                    relocated_events = relocated_events.append(event, ignore_index=True)
+                    relocated_events = pd.concat([relocated_events, pd.DataFrame.from_records(event)])
 
         self.synchronize(attrs=["events"])
 
@@ -1811,7 +1811,7 @@ class InversionIterator(object):
                         residual=residuals
                     )
                     _arrivals = pd.DataFrame(_arrivals)
-                    updated_arrivals = updated_arrivals.append(_arrivals, ignore_index=True)
+                    updated_arrivals = pd.concat([updated_arrivals, pd.DataFrame.from_records(_arrivals)])
 
         self.synchronize(attrs=["arrivals"])
 
